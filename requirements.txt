@@ -1,0 +1,7 @@
+python-dotenv==1.0.0
+pwinput
+tk
+grpcio
+grpcio-tools
+protobuf
+mypy-protobuf
