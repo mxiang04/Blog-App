@@ -11,12 +11,13 @@ from server import Server
 import time
 import logging
 import sys
-
+from start import get_total_replicas
 import grpc
 from protos import app_pb2
 from protos import app_pb2_grpc
 from concurrent import futures
 import signal
+import multiprocessing
 
 load_dotenv()
 
@@ -552,19 +553,13 @@ class ChatAppGUI:
         else:
             messagebox.showerror("Error", "Log out unsuccessful!")
 
-    def start_server(self):
-        """Starts the server in a separate thread."""
-        self.clear_frame()
-        tk.Label(self.main_frame, text="Server Started", font=("Arial", 14)).pack(
-            pady=10
-        )
-        threading.Thread(target=self.run_server, daemon=True).start()
-
-    def run_server(self):
+    def run_server(self, replica):
         """Runs the server."""
         try:
             server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-            app_pb2_grpc.add_AppServicer_to_server(Server(), server)
+            server_object = Server(replica)
+            server_object.replica.other_replicas = get_total_replicas(id_limit=replica.id)
+            app_pb2_grpc.add_AppServicer_to_server(server_object, server)
             # Use specific host from environment variable
             server.add_insecure_port(f"{os.getenv('HOST')}:{os.getenv('PORT')}")
             server.start()
@@ -573,6 +568,26 @@ class ChatAppGUI:
 
         except Exception as e:
             self.root.after(0, lambda: messagebox.showerror("Server Error", str(e)))
+
+    def start_server(self):
+        """Starts the server in a separate thread."""
+        self.clear_frame()
+        tk.Label(self.main_frame, text="Server Started", font=("Arial", 14)).pack(
+            pady=10
+        )
+        replicas = get_total_replicas() 
+        processes = []
+        for replica_id in replicas: 
+            p = multiprocessing.Processing(
+                target=self.run_server, args=(replicas[replica_id]), 
+            )
+            p.start()
+            processes.append(p)
+        # threading.Thread(target=self.run_server, daemon=True).start()
+
+        # Wait for all processes to finish (they won't in this example)
+        for p in processes:
+            p.join()
 
     def on_exit(self):
         self.cleanup()

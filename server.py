@@ -14,124 +14,13 @@ class Server(app_pb2_grpc.AppServicer):
     HEADER = 64
     FORMAT = "utf-8"
 
-    # file paths for persistence
-    USERS_FILE = "users.csv"
-    MESSAGES_FILE = "messages.csv"
-
-    def __init__(self, replica_server_id=1):
+    def __init__(self, replica):
         load_dotenv()
         # all users and their associated data stored in the User object
         self.user_login_database = {}
         self.active_users = {}
 
-        # self.replica = Replica(replica_server_id)
-        self.other_replicas = []
-
-        # load data from CSV files if they exist
-        self.load_data()
-
-    def load_data(self):
-        """
-        Load users and messages from CSV files if they exist
-        """
-        # Load users
-        if os.path.exists(self.USERS_FILE):
-            try:
-                with open(self.USERS_FILE, "r", newline="") as file:
-                    reader = csv.reader(file)
-                    next(reader)  # Skip header
-                    for row in reader:
-                        username, password = row
-                        self.user_login_database[username] = User(username, password)
-                print(
-                    f"Loaded {len(self.user_login_database)} users from {self.USERS_FILE}"
-                )
-            except Exception as e:
-                print(f"Error loading users: {e}")
-
-        # Load messages
-        if os.path.exists(self.MESSAGES_FILE):
-            try:
-                with open(self.MESSAGES_FILE, "r", newline="") as file:
-                    reader = csv.reader(file)
-                    next(reader)  # Skip header
-                    for row in reader:
-                        sender, receiver, msg, timestamp_str, is_read = row
-                        timestamp = datetime.strptime(
-                            timestamp_str, "%Y-%m-%d %H:%M:%S.%f"
-                        )
-                        message = Message(sender, receiver, msg)
-                        message.timestamp = timestamp
-
-                        # add to sender's messages
-                        if sender in self.user_login_database:
-                            self.user_login_database[sender].messages.append(message)
-
-                        # add to receiver's messages or unread_messages
-                        if receiver in self.user_login_database:
-                            if is_read == "True":
-                                self.user_login_database[receiver].messages.append(
-                                    message
-                                )
-                            else:
-                                self.user_login_database[
-                                    receiver
-                                ].unread_messages.append(message)
-                print(f"Loaded messages from {self.MESSAGES_FILE}")
-            except Exception as e:
-                print(f"Error loading messages: {e}")
-
-    def save_data(self):
-        """
-        Save all user and message data to CSV files
-        """
-        # save users
-        try:
-            with open(self.USERS_FILE, "w", newline="") as file:
-                writer = csv.writer(file)
-                writer.writerow(["username", "password"])
-                for username, user in self.user_login_database.items():
-                    writer.writerow([username, user.password])
-        except Exception as e:
-            print(f"Error saving users: {e}")
-
-        # save messages
-        try:
-            with open(self.MESSAGES_FILE, "w", newline="") as file:
-                writer = csv.writer(file)
-                writer.writerow(
-                    ["sender", "receiver", "message", "timestamp", "is_read"]
-                )
-
-                # process all users
-                for username, user in self.user_login_database.items():
-                    # save read messages
-                    for msg in user.messages:
-                        # we only save messages where this user is the sender to avoid duplicates
-                        if msg.sender == username:
-                            writer.writerow(
-                                [
-                                    msg.sender,
-                                    msg.receiver,
-                                    msg.message,
-                                    msg.timestamp,
-                                    "True",
-                                ]
-                            )
-
-                    # Save unread messages
-                    for msg in user.unread_messages:
-                        writer.writerow(
-                            [
-                                msg.sender,
-                                msg.receiver,
-                                msg.message,
-                                msg.timestamp,
-                                "False",
-                            ]
-                        )
-        except Exception as e:
-            print(f"Error saving messages: {e}")
+        self.replica = replica
 
     def check_valid_user(self, username):
         """
