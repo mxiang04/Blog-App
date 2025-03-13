@@ -2,23 +2,136 @@ from dotenv import load_dotenv
 from user import User
 from message import Message
 from datetime import datetime
+import csv
+import os
 
 from protos import app_pb2_grpc, app_pb2
 from util import hash_password
 from consensus import Replica
 
+
 class Server(app_pb2_grpc.AppServicer):
     HEADER = 64
     FORMAT = "utf-8"
 
-    def __init__(self, replica_server_id):
+    # file paths for persistence
+    USERS_FILE = "users.csv"
+    MESSAGES_FILE = "messages.csv"
+
+    def __init__(self, replica_server_id=1):
         load_dotenv()
         # all users and their associated data stored in the User object
         self.user_login_database = {}
         self.active_users = {}
 
-        self.replica = Replica(replica_server_id)
-        self.other_replicas = [] 
+        # self.replica = Replica(replica_server_id)
+        self.other_replicas = []
+
+        # load data from CSV files if they exist
+        self.load_data()
+
+    def load_data(self):
+        """
+        Load users and messages from CSV files if they exist
+        """
+        # Load users
+        if os.path.exists(self.USERS_FILE):
+            try:
+                with open(self.USERS_FILE, "r", newline="") as file:
+                    reader = csv.reader(file)
+                    next(reader)  # Skip header
+                    for row in reader:
+                        username, password = row
+                        self.user_login_database[username] = User(username, password)
+                print(
+                    f"Loaded {len(self.user_login_database)} users from {self.USERS_FILE}"
+                )
+            except Exception as e:
+                print(f"Error loading users: {e}")
+
+        # Load messages
+        if os.path.exists(self.MESSAGES_FILE):
+            try:
+                with open(self.MESSAGES_FILE, "r", newline="") as file:
+                    reader = csv.reader(file)
+                    next(reader)  # Skip header
+                    for row in reader:
+                        sender, receiver, msg, timestamp_str, is_read = row
+                        timestamp = datetime.strptime(
+                            timestamp_str, "%Y-%m-%d %H:%M:%S.%f"
+                        )
+                        message = Message(sender, receiver, msg)
+                        message.timestamp = timestamp
+
+                        # add to sender's messages
+                        if sender in self.user_login_database:
+                            self.user_login_database[sender].messages.append(message)
+
+                        # add to receiver's messages or unread_messages
+                        if receiver in self.user_login_database:
+                            if is_read == "True":
+                                self.user_login_database[receiver].messages.append(
+                                    message
+                                )
+                            else:
+                                self.user_login_database[
+                                    receiver
+                                ].unread_messages.append(message)
+                print(f"Loaded messages from {self.MESSAGES_FILE}")
+            except Exception as e:
+                print(f"Error loading messages: {e}")
+
+    def save_data(self):
+        """
+        Save all user and message data to CSV files
+        """
+        # save users
+        try:
+            with open(self.USERS_FILE, "w", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow(["username", "password"])
+                for username, user in self.user_login_database.items():
+                    writer.writerow([username, user.password])
+        except Exception as e:
+            print(f"Error saving users: {e}")
+
+        # save messages
+        try:
+            with open(self.MESSAGES_FILE, "w", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow(
+                    ["sender", "receiver", "message", "timestamp", "is_read"]
+                )
+
+                # process all users
+                for username, user in self.user_login_database.items():
+                    # save read messages
+                    for msg in user.messages:
+                        # we only save messages where this user is the sender to avoid duplicates
+                        if msg.sender == username:
+                            writer.writerow(
+                                [
+                                    msg.sender,
+                                    msg.receiver,
+                                    msg.message,
+                                    msg.timestamp,
+                                    "True",
+                                ]
+                            )
+
+                    # Save unread messages
+                    for msg in user.unread_messages:
+                        writer.writerow(
+                            [
+                                msg.sender,
+                                msg.receiver,
+                                msg.message,
+                                msg.timestamp,
+                                "False",
+                            ]
+                        )
+        except Exception as e:
+            print(f"Error saving messages: {e}")
 
     def check_valid_user(self, username):
         """
@@ -45,7 +158,9 @@ class Server(app_pb2_grpc.AppServicer):
         """
         # check if the username and password are correct
         if len(request.info) != 2:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Login Request Invalid")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Login Request Invalid"
+            )
 
         username, password = request.info
         if (
@@ -54,7 +169,7 @@ class Server(app_pb2_grpc.AppServicer):
             and username not in self.active_users
         ):
 
-            unread_messages = len(self.user_login_database[username].unread_messages) 
+            unread_messages = len(self.user_login_database[username].unread_messages)
             self.active_users[username] = []
             response = app_pb2.Response(
                 operation=app_pb2.SUCCESS, info=f"{unread_messages}"
@@ -81,18 +196,27 @@ class Server(app_pb2_grpc.AppServicer):
             dict: A dictionary representing the data object
         """
         if len(request.info) != 2:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Create Account Request Invalid")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Create Account Request Invalid"
+            )
 
         username, password = request.info
         # check if the username is taken
         if username in self.user_login_database:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Create Account Failed")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Create Account Failed"
+            )
         # check if the username and password are not empty
         elif not username or not password:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Create Account Failed")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Create Account Failed"
+            )
         # create the account
         else:
             self.user_login_database[username] = User(username, password)
+            # Save changes to CSV
+            self.save_data()
+
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
             print("--------------------------------")
@@ -112,7 +236,9 @@ class Server(app_pb2_grpc.AppServicer):
         """
         try:
             if len(request.info) != 1:
-                return app_pb2.Response(operation=app_pb2.FAILURE, info="List Account Request Invalid")
+                return app_pb2.Response(
+                    operation=app_pb2.FAILURE, info="List Account Request Invalid"
+                )
             search_string = request.info[0]
             accounts = [
                 username
@@ -128,7 +254,9 @@ class Server(app_pb2_grpc.AppServicer):
             return response
 
         except:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="List Account Failed")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="List Account Failed"
+            )
 
     def RPCSendMessage(self, request, context):
         """
@@ -143,23 +271,33 @@ class Server(app_pb2_grpc.AppServicer):
             dict: A dictionary representing the data object
         """
         if len(request.info) != 3:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Send Message Request Invalid")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Send Message Request Invalid"
+            )
 
         sender, receiver, msg = request.info
         # check if the sender is a valid user
         if sender not in self.user_login_database:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Send Message Failed")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Send Message Failed"
+            )
 
         # check if the receiver is a valid user
         if receiver not in self.user_login_database:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Send Message Failed")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Send Message Failed"
+            )
 
         # check if the sender and receiver are the same
         if sender == receiver:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Send Message Failed")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Send Message Failed"
+            )
         # check if the message is empty
         if not msg:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Send Message Failed")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Send Message Failed"
+            )
 
         message = Message(sender, receiver, msg)
 
@@ -172,7 +310,10 @@ class Server(app_pb2_grpc.AppServicer):
 
         # append the message to the sender's messages
         self.user_login_database[sender].messages.append(message)
-        
+
+        # Save changes to CSV
+        self.save_data()
+
         response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
         response_size = response.ByteSize()
         print("--------------------------------")
@@ -180,32 +321,38 @@ class Server(app_pb2_grpc.AppServicer):
         print(f"SERIALIZED DATA LENGTH: {response_size}")
         print("--------------------------------")
         return response
-    
-    
+
     def RPCGetInstantMessages(self, request, context):
         """
         Gets the instant messages of the user.
         """
         if len(request.info) != 1:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Get Instant Messages Request Invalid")
-        
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Get Instant Messages Request Invalid"
+            )
+
         username = request.info[0]
 
-        if username not in self.user_login_database or username not in self.active_users:
+        if (
+            username not in self.user_login_database
+            or username not in self.active_users
+        ):
             return app_pb2.Response(operation=app_pb2.FAILURE, info="User not found")
-                
+
         incoming_messages = self.active_users[username]
 
         incoming_messages = [
-                app_pb2.Message(
-                    sender=msg.sender,
-                    receiver=msg.receiver,
-                    timestamp=str(msg.timestamp),
-                    message=msg.message,
-                )
-                for msg in incoming_messages
-            ]
-        response = app_pb2.Response(operation=app_pb2.SUCCESS, info="", messages=incoming_messages)
+            app_pb2.Message(
+                sender=msg.sender,
+                receiver=msg.receiver,
+                timestamp=str(msg.timestamp),
+                message=msg.message,
+            )
+            for msg in incoming_messages
+        ]
+        response = app_pb2.Response(
+            operation=app_pb2.SUCCESS, info="", messages=incoming_messages
+        )
         return response
 
     def RPCReadMessage(self, request, context):
@@ -218,12 +365,16 @@ class Server(app_pb2_grpc.AppServicer):
             dict: A dictionary representing the data object
         """
         if len(request.info) != 1:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Read Message Request Invalid")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Read Message Request Invalid"
+            )
         username = request.info[0]
 
         # check if the user is a valid user
         if username not in self.user_login_database:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Read Message Failed")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Read Message Failed"
+            )
 
         try:
             user = self.user_login_database[username]
@@ -257,7 +408,9 @@ class Server(app_pb2_grpc.AppServicer):
             return response
 
         except:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Read Message Failed")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Read Message Failed"
+            )
 
     def delete_message_from_user(
         self, user, sender, receiver, msg, timestamp, unread=False
@@ -314,7 +467,9 @@ class Server(app_pb2_grpc.AppServicer):
             dict: A dictionary representing the data object
         """
         if len(request.info) != 4:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Delete Message Request Invalid")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Delete Message Request Invalid"
+            )
 
         sender, receiver, msg, timestamp = request.info
         try:
@@ -330,6 +485,10 @@ class Server(app_pb2_grpc.AppServicer):
                 self.delete_message_from_user(
                     user, sender, receiver, msg, timestamp, unread=True
                 )
+
+            # Save changes to CSV
+            self.save_data()
+
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
             print("--------------------------------")
@@ -339,7 +498,9 @@ class Server(app_pb2_grpc.AppServicer):
             return response
 
         except:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Delete Message Failed")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Delete Message Failed"
+            )
 
     def RPCDeleteAccount(self, request, context):
         """
@@ -352,17 +513,25 @@ class Server(app_pb2_grpc.AppServicer):
             dict: A dictionary representing the data object
         """
         if len(request.info) != 1:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Delete Account Request Invalid")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Delete Account Request Invalid"
+            )
 
         username = request.info[0]
         try:
             # check if the user is a valid user
             if username not in self.user_login_database:
-                return app_pb2.Response(operation=app_pb2.FAILURE, info="Delete Account Failed")
+                return app_pb2.Response(
+                    operation=app_pb2.FAILURE, info="Delete Account Failed"
+                )
 
             self.user_login_database.pop(username)
             if username in self.active_users:
                 self.active_users.pop(username)
+
+            # Save changes to CSV
+            self.save_data()
+
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
             print("--------------------------------")
@@ -372,15 +541,19 @@ class Server(app_pb2_grpc.AppServicer):
             return response
 
         except:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Delete Account Failed")
-        
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Delete Account Failed"
+            )
+
     def RPCLogout(self, request, context):
         """
         Logs out the user.
         """
         if len(request.info) != 1:
-            return app_pb2.Response(operation=app_pb2.FAILURE, info="Logout Request Invalid")
-        
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Logout Request Invalid"
+            )
+
         username = request.info[0]
         try:
             self.active_users.pop(username)
