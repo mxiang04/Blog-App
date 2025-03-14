@@ -26,12 +26,7 @@ if _version_not_supported:
 
 
 class AppStub(object):
-    """message MessageResponse {
-    Operation operation = 1;
-    repeated Message messages = 2;
-    }
-
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
         """Constructor.
@@ -84,15 +79,25 @@ class AppStub(object):
                 request_serializer=protos_dot_app__pb2.Request.SerializeToString,
                 response_deserializer=protos_dot_app__pb2.Response.FromString,
                 _registered_method=True)
+        self.RPCHeartbeat = channel.unary_unary(
+                '/App/RPCHeartbeat',
+                request_serializer=protos_dot_app__pb2.Request.SerializeToString,
+                response_deserializer=protos_dot_app__pb2.Response.FromString,
+                _registered_method=True)
+        self.RPCUpdateLeader = channel.unary_unary(
+                '/App/RPCUpdateLeader',
+                request_serializer=protos_dot_app__pb2.Request.SerializeToString,
+                response_deserializer=protos_dot_app__pb2.Response.FromString,
+                _registered_method=True)
+        self.RPCGetLeaderInfo = channel.unary_unary(
+                '/App/RPCGetLeaderInfo',
+                request_serializer=protos_dot_app__pb2.Request.SerializeToString,
+                response_deserializer=protos_dot_app__pb2.Response.FromString,
+                _registered_method=True)
 
 
 class AppServicer(object):
-    """message MessageResponse {
-    Operation operation = 1;
-    repeated Message messages = 2;
-    }
-
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def RPCLogin(self, request, context):
         """Missing associated documentation comment in .proto file."""
@@ -148,6 +153,24 @@ class AppServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RPCHeartbeat(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RPCUpdateLeader(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RPCGetLeaderInfo(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AppServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -196,6 +219,21 @@ def add_AppServicer_to_server(servicer, server):
                     request_deserializer=protos_dot_app__pb2.Request.FromString,
                     response_serializer=protos_dot_app__pb2.Response.SerializeToString,
             ),
+            'RPCHeartbeat': grpc.unary_unary_rpc_method_handler(
+                    servicer.RPCHeartbeat,
+                    request_deserializer=protos_dot_app__pb2.Request.FromString,
+                    response_serializer=protos_dot_app__pb2.Response.SerializeToString,
+            ),
+            'RPCUpdateLeader': grpc.unary_unary_rpc_method_handler(
+                    servicer.RPCUpdateLeader,
+                    request_deserializer=protos_dot_app__pb2.Request.FromString,
+                    response_serializer=protos_dot_app__pb2.Response.SerializeToString,
+            ),
+            'RPCGetLeaderInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.RPCGetLeaderInfo,
+                    request_deserializer=protos_dot_app__pb2.Request.FromString,
+                    response_serializer=protos_dot_app__pb2.Response.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'App', rpc_method_handlers)
@@ -205,12 +243,7 @@ def add_AppServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class App(object):
-    """message MessageResponse {
-    Operation operation = 1;
-    repeated Message messages = 2;
-    }
-
-    """
+    """Missing associated documentation comment in .proto file."""
 
     @staticmethod
     def RPCLogin(request,
@@ -443,6 +476,87 @@ class App(object):
             request,
             target,
             '/App/RPCLogout',
+            protos_dot_app__pb2.Request.SerializeToString,
+            protos_dot_app__pb2.Response.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RPCHeartbeat(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/App/RPCHeartbeat',
+            protos_dot_app__pb2.Request.SerializeToString,
+            protos_dot_app__pb2.Response.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RPCUpdateLeader(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/App/RPCUpdateLeader',
+            protos_dot_app__pb2.Request.SerializeToString,
+            protos_dot_app__pb2.Response.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RPCGetLeaderInfo(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/App/RPCGetLeaderInfo',
             protos_dot_app__pb2.Request.SerializeToString,
             protos_dot_app__pb2.Response.FromString,
             options,

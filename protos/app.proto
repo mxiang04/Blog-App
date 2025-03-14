@@ -38,6 +38,9 @@ service App {
     rpc RPCReadMessage(Request) returns (Response) {}
     rpc RPCDeleteMessage(Request) returns (Response) {}
     rpc RPCDeleteAccount(Request) returns (Response) {}
-    rpc RPCGetInstantMessages(Request) returns Response) {}
+    rpc RPCGetInstantMessages(Request) returns (Response) {}
     rpc RPCLogout(Request) returns (Response) {}
+    rpc RPCHeartbeat (Request) returns (Response) {}
+    rpc RPCUpdateLeader (Request) returns (Response) {};
+    rpc RPCGetLeaderInfo (Request) returns (Response) {};
 }

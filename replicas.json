@@ -3,24 +3,20 @@
       {
         "id": "replica1",
         "host": "localhost",
-        "port": 65432,
+        "port": 5001,
         "persistent_store": "./data/replica1_store.db"
       },
       {
         "id": "replica2",
         "host": "localhost",
-        "port": 65432,
+        "port": 5002,
         "persistent_store": "./data/replica2_store.db"
       },
       {
         "id": "replica3",
         "host": "localhost",
-        "port": 65432,
+        "port": 5003,
         "persistent_store": "./data/replica3_store.db"
       }
-    ],
-    "load_balancer": {
-      "host": "localhost",
-      "port": 65432
-    }
+    ]
   }

@@ -1,12 +1,11 @@
 import socket
 import os
-from protos import app_pb2
+from protos import app_pb2, app_pb2_grpc
 from util import hash_password
 import threading
 import logging
-import json
-from dotenv import load_dotenv
-
+import grpc 
+from consensus import REPLICAS
 
 class Client:
     # global variables consistent across all instances of the Client class
@@ -16,14 +15,34 @@ class Client:
     # polling thread to handle incoming messages from the server
     CLIENT_LOCK = threading.Lock()
 
-    def __init__(self, stub):
-        load_dotenv()
-        self.host = os.getenv("HOST")
-        self.port = int(os.getenv("PORT"))
-        self.stub = stub
-
+    def __init__(self):
+        self.stub = None
         # username of the current client
         self.username = ""
+
+        while not self.stub: 
+            self.attempt_connection()
+
+    def attempt_connection(self): 
+        for replica_id in REPLICAS: 
+            replica_host, replica_port = REPLICAS[replica_id].host, REPLICAS[replica_id].port 
+            try: 
+                channel = grpc.insecure_channel(f"{replica_host}:{replica_port}")
+                stub = app_pb2_grpc.AppStub(channel)
+                res = stub.RPCGetLeaderInfo(app_pb2.Request())
+                if res.operation == app_pb2.SUCCESS: 
+                    leader_id = ''.join(res.info)
+                    leader_host, leader_port = REPLICAS[leader_id].host, REPLICAS[leader_id].port 
+                    print(leader_id, leader_port, leader_host)
+                    channel = grpc.insecure_channel(f"{leader_host}:{leader_port}")
+                    self.stub = app_pb2_grpc.AppStub(channel)
+                    print("connection done")
+                    return True 
+            except grpc.RpcError as e: 
+                print(f"Failed to query {replica_id} {replica_host}:{replica_port}: {e}")
+        return False 
+        
+
 
     def create_data_object(self, version, operation, info):
         """
@@ -56,17 +75,23 @@ class Client:
 
     def logout(self):
         if self.username:
-            request = app_pb2.Request(info=[self.username])
-            request_size = request.ByteSize()
-            print("--------------------------------")
-            print(f"OPERATION: LOGOUT")
-            print(f"SERIALIZED DATA LENGTH: {request_size} ")
-            print("--------------------------------")
-            res = self.stub.RPCLogout(request)
-            status = res.operation
-            if status == app_pb2.SUCCESS:
-                return True
-        return False
+            try: 
+                request = app_pb2.Request(info=[self.username])
+                request_size = request.ByteSize()
+                print("--------------------------------")
+                print(f"OPERATION: LOGOUT")
+                print(f"SERIALIZED DATA LENGTH: {request_size} ")
+                print("--------------------------------")
+                res = self.stub.RPCLogout(request)
+                status = res.operation
+                if status == app_pb2.SUCCESS:
+                    return True
+                else: 
+                    return False
+            except grpc.RpcError as e: 
+                self.attempt_connection() 
+                self.logout()
+        
 
     def login(self, username, password):
         """
@@ -96,11 +121,14 @@ class Client:
                 self.username = username
                 unread_messages = int(res.info[0])
                 return True, int(unread_messages)
+            else: 
+                return False, 0
 
-            return False, 0
-
-        except:
-            return False, 0
+        except grpc.RpcError as e: 
+            self.attempt_connection()
+            print("Finished attempting connection")
+            self.login(username, password)
+        
 
     def create_account(self, username, password):
         """
@@ -122,7 +150,7 @@ class Client:
             request = app_pb2.Request(info=[username, password])
             request_size = request.ByteSize()
             print("--------------------------------")
-            print(f"OPERATION: CREAT ACCOUNT")
+            print(f"OPERATION: CREATE ACCOUNT")
             print(f"SERIALIZED DATA LENGTH: {request_size} ")
             print("--------------------------------")
             res = self.stub.RPCCreateAccount(request)
@@ -130,11 +158,12 @@ class Client:
 
             if status == app_pb2.SUCCESS:
                 return True
+            else: 
+                return False
 
-            return False
-
-        except:
-            return False
+        except grpc.RpcError as e: 
+            self.attempt_connection()
+            self.create_account(username, password)
 
     def list_accounts(self, search_string):
         """
@@ -158,10 +187,13 @@ class Client:
             status = res.operation
             if status == app_pb2.SUCCESS:
                 return res.info
+            else:
+                logging.error("Listing accounts failed!")
+                return
+        except grpc.RpcError as e: 
+            self.attempt_connection() 
+            self.list_accounts(search_string)     
 
-        except:
-            logging.error("Listing accounts failed!")
-            return
 
     def send_message(self, receiver, msg):
         """
@@ -187,12 +219,14 @@ class Client:
             status = res.operation
             if status == app_pb2.SUCCESS:
                 return True
+            else: 
+                logging.error("Sending message unexpectedly failed")
+                return False
+            
+        except grpc.RpcError as e: 
+            self.attempt_connection() 
+            self.send_message(receiver, msg)     
 
-            return False
-
-        except:
-            logging.error("Sending message unexpectedly failed")
-            return False
 
     def read_message(self):
         """s
@@ -215,13 +249,13 @@ class Client:
             if status == app_pb2.SUCCESS:
                 messages = res.messages
                 return messages
-
             else:
                 logging.error("Reading message failed")
+                return 
 
-        except:
-            logging.error("Unexpected error in read_message")
-            return
+        except grpc.RpcError as e: 
+            self.attempt_connection() 
+            self.read_message()  
 
     def delete_messages(self, messages):
         """
@@ -275,12 +309,11 @@ class Client:
             status = res.operation
             if status == app_pb2.SUCCESS:
                 return True
-
             else:
                 return False
-
-        except:
-            return False
+        except grpc.RpcError as e: 
+            self.attempt_connection() 
+            self.delete_message(sender, receiver, msg, timestamp)  
 
     def get_instant_messages(self):
         try:
@@ -291,8 +324,13 @@ class Client:
                 return res.messages
             else:
                 return []
-        except:
+        except grpc.RpcError as e: 
+            print("attempting connection in get instant messages")
+            self.attempt_connection() 
+            print("finished attempting connection")
+            # self.get_instant_messages()  
             return []
+
 
     def delete_account(self):
         """
@@ -313,9 +351,8 @@ class Client:
             status = res.operation
             if status == app_pb2.SUCCESS:
                 return True
-
             else:
                 return False
-
-        except:
-            return False
+        except grpc.RpcError as e: 
+            self.attempt_connection() 
+            self.delete_account()  

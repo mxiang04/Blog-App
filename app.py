@@ -4,23 +4,18 @@ from dotenv import load_dotenv
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 import threading
-import selectors
 from tkinter import scrolledtext
 from client import Client
 from server import Server
 import time
 import logging
 import sys
-from start import get_total_replicas
 import grpc
-from protos import app_pb2
 from protos import app_pb2_grpc
 from concurrent import futures
 import signal
 import multiprocessing
-
-load_dotenv()
-
+from consensus import REPLICAS
 
 class ChatAppGUI:
     # Global connection ID counter
@@ -124,9 +119,11 @@ class ChatAppGUI:
     def start_client(self):
         """Starts the client instance with Tkinter GUI."""
         self.clear_frame()
-        self.channel = grpc.insecure_channel(f"{os.getenv('HOST')}:{os.getenv('PORT')}")
-        self.stub = app_pb2_grpc.AppStub(self.channel)
-        self.client = Client(self.stub)
+        # lead_server_id = min(REPLICAS.keys())
+        # print(f"CLIENT SIDE {REPLICAS[lead_server_id].host}:{REPLICAS[lead_server_id].port}")
+        # self.channel = grpc.insecure_channel(f"{REPLICAS[lead_server_id].host}:{REPLICAS[lead_server_id].port}")
+        # self.stub = app_pb2_grpc.AppStub(self.channel)
+        self.client = Client()
 
         # start polling in a background thread
         self.polling_active = True
@@ -553,21 +550,6 @@ class ChatAppGUI:
         else:
             messagebox.showerror("Error", "Log out unsuccessful!")
 
-    def run_server(self, replica):
-        """Runs the server."""
-        try:
-            server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-            server_object = Server(replica)
-            server_object.replica.other_replicas = get_total_replicas(id_limit=replica.id)
-            app_pb2_grpc.add_AppServicer_to_server(server_object, server)
-            # Use specific host from environment variable
-            server.add_insecure_port(f"{os.getenv('HOST')}:{os.getenv('PORT')}")
-            server.start()
-            print(f"Server started, listening on {os.getenv('HOST')}:{os.getenv('PORT')}")
-            server.wait_for_termination()
-
-        except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Server Error", str(e)))
 
     def start_server(self):
         """Starts the server in a separate thread."""
@@ -575,24 +557,41 @@ class ChatAppGUI:
         tk.Label(self.main_frame, text="Server Started", font=("Arial", 14)).pack(
             pady=10
         )
-        replicas = get_total_replicas() 
-        processes = []
-        for replica_id in replicas: 
-            p = multiprocessing.Processing(
-                target=self.run_server, args=(replicas[replica_id]), 
-            )
-            p.start()
-            processes.append(p)
-        # threading.Thread(target=self.run_server, daemon=True).start()
+        self.root.update_idletasks()  
+    
+        threading.Thread(target=self.start_server_processes, daemon=True).start()
 
-        # Wait for all processes to finish (they won't in this example)
-        for p in processes:
-            p.join()
+    def start_server_processes(self):
+        """Handles launching server processes in a separate thread."""
+        processes = []
+        try:
+            for replica_id in REPLICAS:
+                p = multiprocessing.Process(
+                    target=run_server, args=(REPLICAS[replica_id],),
+                )
+                p.start()
+                processes.append(p)
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Server Error", str(e)))
 
     def on_exit(self):
         self.cleanup()
         self.root.destroy()
 
+def run_server(replica):
+        """Runs the server."""
+        try:
+            print("run server")
+            server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+            server_object = Server(replica)
+            app_pb2_grpc.add_AppServicer_to_server(server_object, server)  # Correct registration
+            server.add_insecure_port(f"{replica.host}:{replica.port}")
+            server.start()
+            print(f"Server started, listening on {replica.host}:{replica.port}")
+            server.wait_for_termination()
+
+        except Exception as e:
+            logging.error("Server Error")
 
 if __name__ == "__main__":
     root = tk.Tk()

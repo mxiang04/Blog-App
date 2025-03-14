@@ -1,26 +1,135 @@
-from dotenv import load_dotenv
 from user import User
 from message import Message
 from datetime import datetime
 import csv
 import os
-
+import threading
 from protos import app_pb2_grpc, app_pb2
 from util import hash_password
-from consensus import Replica
-
-
+from consensus import REPLICAS, get_total_stubs
+import time 
+import grpc 
+from filelock import FileLock
 class Server(app_pb2_grpc.AppServicer):
     HEADER = 64
     FORMAT = "utf-8"
+    HEART_BEAT_FREQUENCY = 1
 
     def __init__(self, replica):
-        load_dotenv()
         # all users and their associated data stored in the User object
         self.user_login_database = {}
         self.active_users = {}
-
         self.replica = replica
+
+        self.leader_id = min(REPLICAS.keys())
+        self.leader_port = REPLICAS[self.leader_id].port
+        self.leader_host = REPLICAS[self.leader_id].host
+
+        print(f"LEADER {self.leader_id}")
+
+        self.replica_keys = list(REPLICAS.keys())
+        self.election_lock = FileLock("election.lock")
+
+        channel = grpc.insecure_channel(f"{self.replica.host}:{self.replica.port}")
+        self.replica_stub = app_pb2_grpc.AppStub(channel)
+
+        self.running = False 
+        self.REPLICA_STUBS = None
+
+        time.sleep(3)
+
+        self.start_heartbeat()
+    
+    def elect_leader(self):
+        print("inside electing leader?2")
+        if self.leader_id in self.replica_keys: 
+            print("inside electing leader?3")
+            old_id = self.leader_id
+            self.replica_keys.remove(old_id)
+
+            self.leader_id = min(self.replica_keys)
+
+            self.leader_port = REPLICAS[self.leader_id].port
+            self.leader_host = REPLICAS[self.leader_id].host
+
+            print(f"New leader values {self.leader_id}")
+            self.notify_replicas_new_leader()
+        
+    def start_heartbeat(self): 
+        threading.Thread(target=self.send_beats, daemon=True).start()
+
+    def servers_running(self): 
+        request = app_pb2.HeartbeatRequest()
+        while True: 
+            success = 0 
+            print("redoing")
+            for replica_id in self.replica_keys: 
+                if replica_id == self.replica.id: 
+                    sucess += 1 
+                else: 
+                    try: 
+                        res = self.replica_stub.RPCHeartbeat(request)
+                        if res == app_pb2.SUCCESS: 
+                            success += 1 
+                    except grpc.RpcError as e: 
+                        print(f"Not all servers running - please wait {success}")
+        # return success == len(REPLICAS)
+        
+
+    def notify_replicas_new_leader(self):
+        print(f"notify replicas {self.leader_id} from {self.replica.id}")
+        request = app_pb2.Request(info=[self.leader_id, self.leader_host, str(self.leader_port)])
+        for replica_id in self.replica_keys:
+            if replica_id == self.replica.id: 
+                continue 
+            try:
+                res = self.replica_stub.RPCUpdateLeader(request)
+                print(f"Notified {replica_id} of new leader {self.leader_id}")
+            except grpc.RpcError as e: 
+                print(f"Failed to notify {replica_id}: {e}")
+
+
+    def send_beats(self):
+        time.sleep(5)  # Wait for servers to initialize
+        while True:
+            if self.leader_id == self.replica.id:
+                time.sleep(self.HEART_BEAT_FREQUENCY)
+                continue
+            if self.leader_port and self.leader_host and self.leader_id:
+                try:
+                    with grpc.insecure_channel(f"{self.leader_host}:{self.leader_port}") as channel:
+                        stub = app_pb2_grpc.AppStub(channel)
+                        response = stub.RPCHeartbeat(app_pb2.Request())
+                except grpc.RpcError as e:
+                    with self.election_lock: 
+                        print(f"Heartbeat failed: {e}")
+                        print(f"Triggered by {self.replica.id} with leader {self.leader_host}:{self.leader_port}")
+                        self.elect_leader()
+                        print("Electing new leader")
+            time.sleep(self.HEART_BEAT_FREQUENCY)
+    
+    def RPCHeartbeat(self, request, context): 
+        return app_pb2.Response(operation=app_pb2.SUCCESS)
+
+    def RPCUpdateLeader(self, request, context): 
+        print(f"updating leader {request.info}")
+        if len(request.info) != 3:
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Update Leader Request Failed"
+            )
+        leader_id, leader_host, leader_port = request.info[0], request.info[1], request.info[2]
+        print(f"new leader lection {leader_id}")
+
+        if self.leader_id in self.replica_keys: 
+            self.replica_keys.remove(self.leader_id)
+
+            self.leader_id = leader_id 
+            self.leader_host = leader_host
+            self.leader_port = leader_port 
+
+        return app_pb2.Response(operation=app_pb2.SUCCESS, info="")
+
+
 
     def check_valid_user(self, username):
         """
@@ -46,12 +155,17 @@ class Server(app_pb2_grpc.AppServicer):
             dict: A dictionary representing the data object
         """
         # check if the username and password are correct
+        print("RPC Login")
+        if self.leader_id == self.replica.id:
+            print("Broadcasting")
+            self.BroadcastUpdate(request, "RPCLogin")
         if len(request.info) != 2:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Login Request Invalid"
             )
 
         username, password = request.info
+        print(username, password)
         if (
             username in self.user_login_database
             and self.user_login_database[username].password == password
@@ -84,12 +198,23 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
+        print(f"RPC Create Account {self.replica.id}")
+        if self.leader_id == self.replica.id:
+            print("RPC LEADER")
+            ret = self.BroadcastUpdate(request, "RPCCreateAccount")
+            if not ret: 
+                print("here -1")
+                return app_pb2.Response(
+                    operation=app_pb2.FAILURE, info="Broadcast Not Successful"
+                )
+        print("here 0")
         if len(request.info) != 2:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Create Account Request Invalid"
             )
-
+        print("here 1")
         username, password = request.info
+        print(username, password)
         # check if the username is taken
         if username in self.user_login_database:
             return app_pb2.Response(
@@ -104,7 +229,7 @@ class Server(app_pb2_grpc.AppServicer):
         else:
             self.user_login_database[username] = User(username, password)
             # Save changes to CSV
-            self.save_data()
+            # self.save_data()
 
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
@@ -123,6 +248,8 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
+        if self.leader_id == self.replica.id:
+            self.BroadcastUpdate(request, "RPCListAccount")
         try:
             if len(request.info) != 1:
                 return app_pb2.Response(
@@ -147,6 +274,7 @@ class Server(app_pb2_grpc.AppServicer):
                 operation=app_pb2.FAILURE, info="List Account Failed"
             )
 
+
     def RPCSendMessage(self, request, context):
         """
         Sends a message to the receiver if the sender and receiver are valid users.
@@ -159,6 +287,8 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
+        if self.leader_id == self.replica.id:
+            self.BroadcastUpdate(request, "RPCSendMessage")
         if len(request.info) != 3:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Send Message Request Invalid"
@@ -201,7 +331,7 @@ class Server(app_pb2_grpc.AppServicer):
         self.user_login_database[sender].messages.append(message)
 
         # Save changes to CSV
-        self.save_data()
+        # self.save_data()
 
         response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
         response_size = response.ByteSize()
@@ -215,6 +345,8 @@ class Server(app_pb2_grpc.AppServicer):
         """
         Gets the instant messages of the user.
         """
+        if self.leader_id == self.replica.id:
+            self.BroadcastUpdate(request, "RPCGetInstantMessages")
         if len(request.info) != 1:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Get Instant Messages Request Invalid"
@@ -253,6 +385,8 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
+        if self.leader_id == self.replica.id:
+            self.BroadcastUpdate(request, "RPCReadMessage")
         if len(request.info) != 1:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Read Message Request Invalid"
@@ -355,6 +489,8 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
+        if self.leader_id == self.replica.id:
+            self.BroadcastUpdate(request, "RPCDeleteMessage")
         if len(request.info) != 4:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Delete Message Request Invalid"
@@ -376,7 +512,7 @@ class Server(app_pb2_grpc.AppServicer):
                 )
 
             # Save changes to CSV
-            self.save_data()
+            # self.save_data()
 
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
@@ -401,6 +537,8 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
+        if self.leader_id == self.replica.id:
+            self.BroadcastUpdate(request, "RPCDeleteAccount")
         if len(request.info) != 1:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Delete Account Request Invalid"
@@ -419,7 +557,7 @@ class Server(app_pb2_grpc.AppServicer):
                 self.active_users.pop(username)
 
             # Save changes to CSV
-            self.save_data()
+            # self.save_data()
 
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
@@ -438,6 +576,8 @@ class Server(app_pb2_grpc.AppServicer):
         """
         Logs out the user.
         """
+        if self.leader_id == self.replica.id:
+            self.BroadcastUpdate(request, "RPCLogout")
         if len(request.info) != 1:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Logout Request Invalid"
@@ -455,3 +595,31 @@ class Server(app_pb2_grpc.AppServicer):
             return response
         except:
             return app_pb2.Response(operation=app_pb2.FAILURE, info="Logout Failed")
+        
+    def RPCGetLeaderInfo(self, request, context):
+        return app_pb2.Response(operation=app_pb2.SUCCESS, info=f"{self.leader_id}")
+    
+    def BroadcastUpdate(self, request, method): 
+        print("inside broadcast")
+        if not self.REPLICA_STUBS: 
+            self.REPLICA_STUBS = get_total_stubs()
+            print("in here?")
+        if not self.leader_id == self.replica.id:
+            return 
+        success_count = 0 
+        for backup_replica_id in self.replica_keys: 
+            if backup_replica_id == self.replica.id: 
+                continue 
+            backup_stub = self.REPLICA_STUBS[backup_replica_id]
+            rpc_method = getattr(backup_stub, method, None) 
+            if rpc_method: 
+                res = rpc_method(request)
+                status = res.operation
+                if status == app_pb2.SUCCESS:
+                    success_count += 1 
+        if success_count > 0: 
+            print("broadcast success")
+            return True 
+        return False 
+            
+
