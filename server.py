@@ -7,9 +7,11 @@ import threading
 from protos import app_pb2_grpc, app_pb2
 from util import hash_password
 from consensus import REPLICAS, get_total_stubs
-import time 
-import grpc 
+import time
+import grpc
 from filelock import FileLock
+
+
 class Server(app_pb2_grpc.AppServicer):
     HEADER = 64
     FORMAT = "utf-8"
@@ -33,16 +35,120 @@ class Server(app_pb2_grpc.AppServicer):
         channel = grpc.insecure_channel(f"{self.replica.host}:{self.replica.port}")
         self.replica_stub = app_pb2_grpc.AppStub(channel)
 
-        self.running = False 
+        self.running = False
         self.REPLICA_STUBS = None
 
         time.sleep(3)
 
         self.start_heartbeat()
-    
+        self.load_data()
+
+    def load_data(self):
+        """
+        Load users and messages from CSV files if they exist
+        """
+        # Load users
+        if os.path.exists(self.replica.users_store):
+            try:
+                with open(self.replica.users_store, "r", newline="") as file:
+                    reader = csv.reader(file)
+                    next(reader)  # Skip header
+                    for row in reader:
+                        username, password = row
+                        self.user_login_database[username] = User(username, password)
+                print(
+                    f"Loaded {len(self.user_login_database)} users from {self.replica.users_store}"
+                )
+            except Exception as e:
+                print(f"Error loading users: {e}")
+
+        # Load messages
+        if os.path.exists(self.replica.messages_store):
+            try:
+                with open(self.replica.messages_store, "r", newline="") as file:
+                    reader = csv.reader(file)
+                    next(reader)  # Skip header
+                    for row in reader:
+                        sender, receiver, msg, timestamp_str, is_read = row
+                        timestamp = datetime.strptime(
+                            timestamp_str, "%Y-%m-%d %H:%M:%S.%f"
+                        )
+                        message = Message(sender, receiver, msg)
+                        message.timestamp = timestamp
+
+                        # add to sender's messages
+                        if sender in self.user_login_database:
+                            self.user_login_database[sender].messages.append(message)
+
+                        # add to receiver's messages or unread_messages
+                        if receiver in self.user_login_database:
+                            if is_read == "True":
+                                self.user_login_database[receiver].messages.append(
+                                    message
+                                )
+                            else:
+                                self.user_login_database[
+                                    receiver
+                                ].unread_messages.append(message)
+                print(f"Loaded messages from {self.replica.messages_store}")
+            except Exception as e:
+                print(f"Error loading messages: {e}")
+
+    def save_data(self):
+        """
+        Save all user and message data to CSV files
+        """
+        # save users
+        try:
+            with open(self.replica.users_store, "w", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow(["username", "password"])
+                for username, user in self.user_login_database.items():
+                    writer.writerow([username, user.password])
+        except Exception as e:
+            print(f"Error saving users: {e}")
+
+        # save messages
+        try:
+            with open(self.replica.messages_store, "w", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow(
+                    ["sender", "receiver", "message", "timestamp", "is_read"]
+                )
+
+                # process all users
+                for username, user in self.user_login_database.items():
+                    # save read messages
+                    for msg in user.messages:
+                        # we only save messages where this user is the sender to avoid duplicates
+                        if msg.sender == username:
+                            writer.writerow(
+                                [
+                                    msg.sender,
+                                    msg.receiver,
+                                    msg.message,
+                                    msg.timestamp,
+                                    "True",
+                                ]
+                            )
+
+                    # Save unread messages
+                    for msg in user.unread_messages:
+                        writer.writerow(
+                            [
+                                msg.sender,
+                                msg.receiver,
+                                msg.message,
+                                msg.timestamp,
+                                "False",
+                            ]
+                        )
+        except Exception as e:
+            print(f"Error saving messages: {e}")
+
     def elect_leader(self):
         print("inside electing leader?2")
-        if self.leader_id in self.replica_keys: 
+        if self.leader_id in self.replica_keys:
             print("inside electing leader?3")
             old_id = self.leader_id
             self.replica_keys.remove(old_id)
@@ -54,40 +160,40 @@ class Server(app_pb2_grpc.AppServicer):
 
             print(f"New leader values {self.leader_id}")
             self.notify_replicas_new_leader()
-        
-    def start_heartbeat(self): 
+
+    def start_heartbeat(self):
         threading.Thread(target=self.send_beats, daemon=True).start()
 
-    def servers_running(self): 
+    def servers_running(self):
         request = app_pb2.HeartbeatRequest()
-        while True: 
-            success = 0 
+        while True:
+            success = 0
             print("redoing")
-            for replica_id in self.replica_keys: 
-                if replica_id == self.replica.id: 
-                    sucess += 1 
-                else: 
-                    try: 
+            for replica_id in self.replica_keys:
+                if replica_id == self.replica.id:
+                    sucess += 1
+                else:
+                    try:
                         res = self.replica_stub.RPCHeartbeat(request)
-                        if res == app_pb2.SUCCESS: 
-                            success += 1 
-                    except grpc.RpcError as e: 
+                        if res == app_pb2.SUCCESS:
+                            success += 1
+                    except grpc.RpcError as e:
                         print(f"Not all servers running - please wait {success}")
         # return success == len(REPLICAS)
-        
 
     def notify_replicas_new_leader(self):
         print(f"notify replicas {self.leader_id} from {self.replica.id}")
-        request = app_pb2.Request(info=[self.leader_id, self.leader_host, str(self.leader_port)])
+        request = app_pb2.Request(
+            info=[self.leader_id, self.leader_host, str(self.leader_port)]
+        )
         for replica_id in self.replica_keys:
-            if replica_id == self.replica.id: 
-                continue 
+            if replica_id == self.replica.id:
+                continue
             try:
                 res = self.replica_stub.RPCUpdateLeader(request)
                 print(f"Notified {replica_id} of new leader {self.leader_id}")
-            except grpc.RpcError as e: 
+            except grpc.RpcError as e:
                 print(f"Failed to notify {replica_id}: {e}")
-
 
     def send_beats(self):
         time.sleep(5)  # Wait for servers to initialize
@@ -97,39 +203,45 @@ class Server(app_pb2_grpc.AppServicer):
                 continue
             if self.leader_port and self.leader_host and self.leader_id:
                 try:
-                    with grpc.insecure_channel(f"{self.leader_host}:{self.leader_port}") as channel:
+                    with grpc.insecure_channel(
+                        f"{self.leader_host}:{self.leader_port}"
+                    ) as channel:
                         stub = app_pb2_grpc.AppStub(channel)
                         response = stub.RPCHeartbeat(app_pb2.Request())
                 except grpc.RpcError as e:
-                    with self.election_lock: 
+                    with self.election_lock:
                         print(f"Heartbeat failed: {e}")
-                        print(f"Triggered by {self.replica.id} with leader {self.leader_host}:{self.leader_port}")
+                        print(
+                            f"Triggered by {self.replica.id} with leader {self.leader_host}:{self.leader_port}"
+                        )
                         self.elect_leader()
                         print("Electing new leader")
             time.sleep(self.HEART_BEAT_FREQUENCY)
-    
-    def RPCHeartbeat(self, request, context): 
+
+    def RPCHeartbeat(self, request, context):
         return app_pb2.Response(operation=app_pb2.SUCCESS)
 
-    def RPCUpdateLeader(self, request, context): 
+    def RPCUpdateLeader(self, request, context):
         print(f"updating leader {request.info}")
         if len(request.info) != 3:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Update Leader Request Failed"
             )
-        leader_id, leader_host, leader_port = request.info[0], request.info[1], request.info[2]
+        leader_id, leader_host, leader_port = (
+            request.info[0],
+            request.info[1],
+            request.info[2],
+        )
         print(f"new leader lection {leader_id}")
 
-        if self.leader_id in self.replica_keys: 
+        if self.leader_id in self.replica_keys:
             self.replica_keys.remove(self.leader_id)
 
-            self.leader_id = leader_id 
+            self.leader_id = leader_id
             self.leader_host = leader_host
-            self.leader_port = leader_port 
+            self.leader_port = leader_port
 
         return app_pb2.Response(operation=app_pb2.SUCCESS, info="")
-
-
 
     def check_valid_user(self, username):
         """
@@ -202,7 +314,7 @@ class Server(app_pb2_grpc.AppServicer):
         if self.leader_id == self.replica.id:
             print("RPC LEADER")
             ret = self.BroadcastUpdate(request, "RPCCreateAccount")
-            if not ret: 
+            if not ret:
                 print("here -1")
                 return app_pb2.Response(
                     operation=app_pb2.FAILURE, info="Broadcast Not Successful"
@@ -229,7 +341,8 @@ class Server(app_pb2_grpc.AppServicer):
         else:
             self.user_login_database[username] = User(username, password)
             # Save changes to CSV
-            # self.save_data()
+            print(self.replica, "HELLO", "SAVING DATA")
+            self.save_data()
 
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
@@ -273,7 +386,6 @@ class Server(app_pb2_grpc.AppServicer):
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="List Account Failed"
             )
-
 
     def RPCSendMessage(self, request, context):
         """
@@ -331,7 +443,7 @@ class Server(app_pb2_grpc.AppServicer):
         self.user_login_database[sender].messages.append(message)
 
         # Save changes to CSV
-        # self.save_data()
+        self.save_data()
 
         response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
         response_size = response.ByteSize()
@@ -512,7 +624,7 @@ class Server(app_pb2_grpc.AppServicer):
                 )
 
             # Save changes to CSV
-            # self.save_data()
+            self.save_data()
 
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
@@ -557,7 +669,7 @@ class Server(app_pb2_grpc.AppServicer):
                 self.active_users.pop(username)
 
             # Save changes to CSV
-            # self.save_data()
+            self.save_data()
 
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
@@ -595,31 +707,29 @@ class Server(app_pb2_grpc.AppServicer):
             return response
         except:
             return app_pb2.Response(operation=app_pb2.FAILURE, info="Logout Failed")
-        
+
     def RPCGetLeaderInfo(self, request, context):
         return app_pb2.Response(operation=app_pb2.SUCCESS, info=f"{self.leader_id}")
-    
-    def BroadcastUpdate(self, request, method): 
+
+    def BroadcastUpdate(self, request, method):
         print("inside broadcast")
-        if not self.REPLICA_STUBS: 
+        if not self.REPLICA_STUBS:
             self.REPLICA_STUBS = get_total_stubs()
             print("in here?")
         if not self.leader_id == self.replica.id:
-            return 
-        success_count = 0 
-        for backup_replica_id in self.replica_keys: 
-            if backup_replica_id == self.replica.id: 
-                continue 
+            return
+        success_count = 0
+        for backup_replica_id in self.replica_keys:
+            if backup_replica_id == self.replica.id:
+                continue
             backup_stub = self.REPLICA_STUBS[backup_replica_id]
-            rpc_method = getattr(backup_stub, method, None) 
-            if rpc_method: 
+            rpc_method = getattr(backup_stub, method, None)
+            if rpc_method:
                 res = rpc_method(request)
                 status = res.operation
                 if status == app_pb2.SUCCESS:
-                    success_count += 1 
-        if success_count > 0: 
+                    success_count += 1
+        if success_count > 0:
             print("broadcast success")
-            return True 
-        return False 
-            
-
+            return True
+        return False
