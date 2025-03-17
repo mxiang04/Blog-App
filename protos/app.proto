@@ -30,6 +30,12 @@ message Response {
     repeated Message messages = 3;
 }
 
+message SyncDataRequest {
+  string source_id = 1;
+  string data = 2;
+  bool is_leader = 3;
+}
+
 service App {
     rpc RPCLogin(Request) returns (Response) {}
     rpc RPCCreateAccount(Request) returns (Response) {}
@@ -43,4 +49,5 @@ service App {
     rpc RPCHeartbeat (Request) returns (Response) {}
     rpc RPCUpdateLeader (Request) returns (Response) {};
     rpc RPCGetLeaderInfo (Request) returns (Response) {};
+    rpc RPCSyncData(SyncDataRequest) returns (Response);
 }

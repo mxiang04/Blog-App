@@ -1,22 +1,25 @@
 {
-    "replicas": [
-      {
-        "id": "replica1",
-        "host": "localhost",
-        "port": 5001,
-        "persistent_store": "./data/replica1_store.db"
-      },
-      {
-        "id": "replica2",
-        "host": "localhost",
-        "port": 5002,
-        "persistent_store": "./data/replica2_store.db"
-      },
-      {
-        "id": "replica3",
-        "host": "localhost",
-        "port": 5003,
-        "persistent_store": "./data/replica3_store.db"
-      }
-    ]
-  }
+  "replicas": [
+    {
+      "id": "replica1",
+      "host": "localhost",
+      "port": 5001,
+      "messages_store": "replica1_messages.csv",
+      "users_store": "replica1_users.csv"
+    },
+    {
+      "id": "replica2",
+      "host": "localhost",
+      "port": 5002,
+      "messages_store": "replica2_messages.csv",
+      "users_store": "replica2_users.csv"
+    },
+    {
+      "id": "replica3",
+      "host": "localhost",
+      "port": 5003,
+      "messages_store": "replica3_messages.csv",
+      "users_store": "replica3_users.csv"
+    }
+  ]
+}

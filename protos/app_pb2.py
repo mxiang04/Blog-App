@@ -24,21 +24,23 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x10protos/app.proto\"O\n\x07Message\x12\x0e\n\x06sender\x18\x01 \x01(\t\x12\x10\n\x08receiver\x18\x02 \x01(\t\x12\x11\n\ttimestamp\x18\x03 \x01(\t\x12\x0f\n\x07message\x18\x04 \x01(\t\"\x17\n\x07Request\x12\x0c\n\x04info\x18\x01 \x03(\t\"S\n\x08Response\x12\x1d\n\toperation\x18\x01 \x01(\x0e\x32\n.Operation\x12\x0c\n\x04info\x18\x02 \x03(\t\x12\x1a\n\x08messages\x18\x03 \x03(\x0b\x32\x08.Message*\xbc\x01\n\tOperation\x12\x0b\n\x07SUCCESS\x10\x00\x12\x0b\n\x07\x46\x41ILURE\x10\x01\x12\x17\n\x13\x44\x45LIVER_MESSAGE_NOW\x10\x02\x12\t\n\x05LOGIN\x10\x03\x12\x12\n\x0e\x43REATE_ACCOUNT\x10\x04\x12\x12\n\x0e\x44\x45LETE_ACCOUNT\x10\x05\x12\x11\n\rLIST_ACCOUNTS\x10\x06\x12\x10\n\x0cSEND_MESSAGE\x10\x07\x12\x10\n\x0cREAD_MESSAGE\x10\x08\x12\x12\n\x0e\x44\x45LETE_MESSAGE\x10\t2\xf4\x03\n\x03\x41pp\x12!\n\x08RPCLogin\x12\x08.Request\x1a\t.Response\"\x00\x12)\n\x10RPCCreateAccount\x12\x08.Request\x1a\t.Response\"\x00\x12\'\n\x0eRPCListAccount\x12\x08.Request\x1a\t.Response\"\x00\x12\'\n\x0eRPCSendMessage\x12\x08.Request\x1a\t.Response\"\x00\x12\'\n\x0eRPCReadMessage\x12\x08.Request\x1a\t.Response\"\x00\x12)\n\x10RPCDeleteMessage\x12\x08.Request\x1a\t.Response\"\x00\x12)\n\x10RPCDeleteAccount\x12\x08.Request\x1a\t.Response\"\x00\x12.\n\x15RPCGetInstantMessages\x12\x08.Request\x1a\t.Response\"\x00\x12\"\n\tRPCLogout\x12\x08.Request\x1a\t.Response\"\x00\x12%\n\x0cRPCHeartbeat\x12\x08.Request\x1a\t.Response\"\x00\x12(\n\x0fRPCUpdateLeader\x12\x08.Request\x1a\t.Response\"\x00\x12)\n\x10RPCGetLeaderInfo\x12\x08.Request\x1a\t.Response\"\x00\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x10protos/app.proto\"O\n\x07Message\x12\x0e\n\x06sender\x18\x01 \x01(\t\x12\x10\n\x08receiver\x18\x02 \x01(\t\x12\x11\n\ttimestamp\x18\x03 \x01(\t\x12\x0f\n\x07message\x18\x04 \x01(\t\"\x17\n\x07Request\x12\x0c\n\x04info\x18\x01 \x03(\t\"S\n\x08Response\x12\x1d\n\toperation\x18\x01 \x01(\x0e\x32\n.Operation\x12\x0c\n\x04info\x18\x02 \x03(\t\x12\x1a\n\x08messages\x18\x03 \x03(\x0b\x32\x08.Message\"E\n\x0fSyncDataRequest\x12\x11\n\tsource_id\x18\x01 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\t\x12\x11\n\tis_leader\x18\x03 \x01(\x08*\xbc\x01\n\tOperation\x12\x0b\n\x07SUCCESS\x10\x00\x12\x0b\n\x07\x46\x41ILURE\x10\x01\x12\x17\n\x13\x44\x45LIVER_MESSAGE_NOW\x10\x02\x12\t\n\x05LOGIN\x10\x03\x12\x12\n\x0e\x43REATE_ACCOUNT\x10\x04\x12\x12\n\x0e\x44\x45LETE_ACCOUNT\x10\x05\x12\x11\n\rLIST_ACCOUNTS\x10\x06\x12\x10\n\x0cSEND_MESSAGE\x10\x07\x12\x10\n\x0cREAD_MESSAGE\x10\x08\x12\x12\n\x0e\x44\x45LETE_MESSAGE\x10\t2\xa0\x04\n\x03\x41pp\x12!\n\x08RPCLogin\x12\x08.Request\x1a\t.Response\"\x00\x12)\n\x10RPCCreateAccount\x12\x08.Request\x1a\t.Response\"\x00\x12\'\n\x0eRPCListAccount\x12\x08.Request\x1a\t.Response\"\x00\x12\'\n\x0eRPCSendMessage\x12\x08.Request\x1a\t.Response\"\x00\x12\'\n\x0eRPCReadMessage\x12\x08.Request\x1a\t.Response\"\x00\x12)\n\x10RPCDeleteMessage\x12\x08.Request\x1a\t.Response\"\x00\x12)\n\x10RPCDeleteAccount\x12\x08.Request\x1a\t.Response\"\x00\x12.\n\x15RPCGetInstantMessages\x12\x08.Request\x1a\t.Response\"\x00\x12\"\n\tRPCLogout\x12\x08.Request\x1a\t.Response\"\x00\x12%\n\x0cRPCHeartbeat\x12\x08.Request\x1a\t.Response\"\x00\x12(\n\x0fRPCUpdateLeader\x12\x08.Request\x1a\t.Response\"\x00\x12)\n\x10RPCGetLeaderInfo\x12\x08.Request\x1a\t.Response\"\x00\x12*\n\x0bRPCSyncData\x12\x10.SyncDataRequest\x1a\t.Responseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'protos.app_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_OPERATION']._serialized_start=212
-  _globals['_OPERATION']._serialized_end=400
+  _globals['_OPERATION']._serialized_start=283
+  _globals['_OPERATION']._serialized_end=471
   _globals['_MESSAGE']._serialized_start=20
   _globals['_MESSAGE']._serialized_end=99
   _globals['_REQUEST']._serialized_start=101
   _globals['_REQUEST']._serialized_end=124
   _globals['_RESPONSE']._serialized_start=126
   _globals['_RESPONSE']._serialized_end=209
-  _globals['_APP']._serialized_start=403
-  _globals['_APP']._serialized_end=903
+  _globals['_SYNCDATAREQUEST']._serialized_start=211
+  _globals['_SYNCDATAREQUEST']._serialized_end=280
+  _globals['_APP']._serialized_start=474
+  _globals['_APP']._serialized_end=1018
 # @@protoc_insertion_point(module_scope)

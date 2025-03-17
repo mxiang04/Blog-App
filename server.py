@@ -5,7 +5,7 @@ import csv
 import os
 import threading
 from protos import app_pb2_grpc, app_pb2
-from util import hash_password
+from util import deserialize_data, hash_password, serialize_data
 from consensus import REPLICAS, get_total_stubs
 import time
 import grpc
@@ -41,7 +41,9 @@ class Server(app_pb2_grpc.AppServicer):
         time.sleep(3)
 
         self.start_heartbeat()
-        self.load_data()
+        if replica.id == self.leader_id:
+            self.load_data()
+            self.sync_data_to_followers()
 
     def load_data(self):
         """
@@ -145,6 +147,249 @@ class Server(app_pb2_grpc.AppServicer):
                         )
         except Exception as e:
             print(f"Error saving messages: {e}")
+
+    def sync_data_to_followers(self):
+        """
+        Synchronizes user database and active users data from leader to all follower replicas.
+        Called whenever the leader makes changes to the data.
+
+        Returns:
+            bool: True if synchronization was successful for at least one follower, False otherwise
+        """
+        # leader only
+        if self.leader_id != self.replica.id:
+            print(
+                f"Warning: Non-leader replica {self.replica.id} attempted to sync to followers"
+            )
+            return False
+
+        # initialize replica stubs if not already done
+        if not self.REPLICA_STUBS:
+            self.REPLICA_STUBS = get_total_stubs()
+
+        # serialize data
+        serialized_data = serialize_data(self.user_login_database, self.active_users)
+
+        # sync request
+        sync_request = app_pb2.SyncDataRequest(
+            source_id=self.replica.id, data=serialized_data, is_leader=True
+        )
+
+        # track successful syncs
+        success_count = 0
+        total_followers = len(self.replica_keys) - 1  # Exclude self
+
+        # send to followers
+        for follower_id in self.replica_keys:
+            if follower_id == self.replica.id:
+                continue
+
+            try:
+                follower_stub = self.REPLICA_STUBS[follower_id]
+                response = follower_stub.RPCSyncData(sync_request)
+
+                if response.operation == app_pb2.SUCCESS:
+                    success_count += 1
+                    print(f"Successfully synced data to follower {follower_id}")
+                else:
+                    print(
+                        f"Failed to sync data to follower {follower_id}: {response.info}"
+                    )
+            except grpc.RpcError as e:
+                print(f"Error syncing data to follower {follower_id}: {e}")
+
+        print(f"Synced data to {success_count}/{total_followers} followers")
+        return success_count > 0
+
+    def sync_data_to_leader(self):
+        """
+        Synchronizes user database and active users data from a follower to the leader.
+        Called whenever a follower makes local changes that need to be propagated.
+
+        Returns:
+            bool: True if synchronization was successful, False otherwise
+        """
+        # followers only
+        if self.leader_id == self.replica.id:
+            print(
+                f"Warning: Leader replica {self.replica.id} attempted to sync to leader"
+            )
+            return True
+
+        try:
+            # create a channel to the leader
+            with grpc.insecure_channel(
+                f"{self.leader_host}:{self.leader_port}"
+            ) as channel:
+                leader_stub = app_pb2_grpc.AppStub(channel)
+
+                # serialize
+                serialized_data = serialize_data(
+                    self.user_login_database, self.active_users
+                )
+
+                # sync request
+                sync_request = app_pb2.SyncDataRequest(
+                    source_id=self.replica.id, data=serialized_data, is_leader=False
+                )
+                response = leader_stub.RPCSyncData(sync_request)
+
+                if response.operation == app_pb2.SUCCESS:
+                    print(f"Successfully sent data update to leader ({self.leader_id})")
+                    return True
+                else:
+                    print(f"Failed to send data update to leader: {response.info}")
+                    return False
+
+        except grpc.RpcError as e:
+            print(f"Error sending data to leader: {e}")
+            # this might indicate leader is down
+            with self.election_lock:
+                print("Leader may be down, triggering election")
+                self.elect_leader()
+            return False
+
+    def RPCSyncData(self, request, context):
+        """
+        Handles incoming data synchronization requests from both leaders and followers.
+        This is the RPC endpoint that receives sync requests.
+
+        Parameters:
+            request: The SyncDataRequest containing the serialized data
+            context: The gRPC context
+
+        Returns:
+            Response: A gRPC Response indicating success or failure
+        """
+        try:
+            # extract information from request
+            source_id = request.source_id
+            is_from_leader = request.is_leader
+            serialized_data = request.data
+
+            print(
+                f"Received sync data from {'leader' if is_from_leader else 'follower'} {source_id}"
+            )
+
+            # deserialize
+            deserialized_data = deserialize_data(serialized_data)
+
+            if not deserialized_data or len(deserialized_data) != 2:
+                return app_pb2.Response(
+                    operation=app_pb2.FAILURE, info="Invalid sync data format"
+                )
+
+            received_user_db, received_active_users = deserialized_data
+
+            if is_from_leader:
+                print(
+                    f"Replica {self.replica.id} updating data from leader {source_id}"
+                )
+                self.user_login_database = received_user_db
+                self.active_users = received_active_users
+
+            else:
+                if self.leader_id == self.replica.id:
+                    print(
+                        f"Leader {self.replica.id} merging data from follower {source_id}"
+                    )
+                    # merge data from follower
+                    self.merge_data(received_user_db, received_active_users)
+                    # propagate changes to other followers
+                    self.sync_data_to_followers()
+                else:
+                    print(
+                        f"Warning: Follower {self.replica.id} received update from follower {source_id}"
+                    )
+                    return app_pb2.Response(
+                        operation=app_pb2.FAILURE,
+                        info="Follower-to-follower sync not allowed",
+                    )
+
+            # save changes to csv
+            self.save_data()
+
+            return app_pb2.Response(
+                operation=app_pb2.SUCCESS,
+                info=f"Data synchronized from {'leader' if is_from_leader else 'follower'} {source_id}",
+            )
+
+        except Exception as e:
+            print(f"Error in RPCSyncData: {str(e)}")
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info=f"Sync data failed: {str(e)}"
+            )
+
+    def merge_data(self, incoming_user_db, incoming_active_users):
+        """
+        Merges incoming data with the existing data, resolving conflicts.
+
+        Parameters:
+            incoming_user_db: User database from another replica
+            incoming_active_users: Active users from another replica
+        """
+        # merge user database
+        for username, incoming_user in incoming_user_db.items():
+            if username not in self.user_login_database:
+                # new user, add to database
+                self.user_login_database[username] = incoming_user
+            else:
+                # existing user, merge data
+                existing_user = self.user_login_database[username]
+
+                # get all message IDs from existing user
+                existing_msg_ids = {
+                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    for msg in existing_user.messages
+                }
+                existing_unread_ids = {
+                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    for msg in existing_user.unread_messages
+                }
+
+                # add non-duplicate messages
+                for msg in incoming_user.messages:
+                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    if msg_id not in existing_msg_ids:
+                        existing_user.messages.append(msg)
+
+                # add non-duplicate unread messages
+                for msg in incoming_user.unread_messages:
+                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    if (
+                        msg_id not in existing_unread_ids
+                        and msg_id not in existing_msg_ids
+                    ):
+                        existing_user.unread_messages.append(msg)
+
+        # merge active users
+        for username, incoming_messages in incoming_active_users.items():
+            if username not in self.active_users:
+                self.active_users[username] = incoming_messages
+            else:
+                # get existing message IDs
+                existing_msg_ids = {
+                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    for msg in self.active_users[username]
+                }
+
+                # add non-duplicate messages
+                for msg in incoming_messages:
+                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    if msg_id not in existing_msg_ids:
+                        self.active_users[username].append(msg)
+
+    def sync_after_operation(self):
+        """
+        Helper function that should be called after operations that modify data.
+        Determines whether to sync to leader or followers based on replica role.
+        """
+        if self.leader_id == self.replica.id:
+            # sync to followers
+            self.sync_data_to_followers()
+        else:
+            # sync to leader
+            self.sync_data_to_leader()
 
     def elect_leader(self):
         print("inside electing leader?2")
@@ -341,8 +586,8 @@ class Server(app_pb2_grpc.AppServicer):
         else:
             self.user_login_database[username] = User(username, password)
             # Save changes to CSV
-            print(self.replica, "HELLO", "SAVING DATA")
-            self.save_data()
+            print(self.replica.id, "HELLO", "SAVING DATA")
+            self.sync_after_operation()
 
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
@@ -443,7 +688,7 @@ class Server(app_pb2_grpc.AppServicer):
         self.user_login_database[sender].messages.append(message)
 
         # Save changes to CSV
-        self.save_data()
+        self.sync_after_operation()
 
         response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
         response_size = response.ByteSize()
@@ -624,7 +869,7 @@ class Server(app_pb2_grpc.AppServicer):
                 )
 
             # Save changes to CSV
-            self.save_data()
+            self.sync_after_operation()
 
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
@@ -669,7 +914,7 @@ class Server(app_pb2_grpc.AppServicer):
                 self.active_users.pop(username)
 
             # Save changes to CSV
-            self.save_data()
+            self.sync_after_operation()
 
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
             response_size = response.ByteSize()
