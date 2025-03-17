@@ -47,56 +47,60 @@ class Server(app_pb2_grpc.AppServicer):
 
     def load_data(self):
         """
-        Load users and messages from CSV files if they exist
+        Load users and messages from CSV files if they exist, otherwise create empty CSV files.
         """
-        # Load users
-        if os.path.exists(self.replica.users_store):
-            try:
-                with open(self.replica.users_store, "r", newline="") as file:
-                    reader = csv.reader(file)
-                    next(reader)  # Skip header
-                    for row in reader:
-                        username, password = row
-                        self.user_login_database[username] = User(username, password)
-                print(
-                    f"Loaded {len(self.user_login_database)} users from {self.replica.users_store}"
-                )
-            except Exception as e:
-                print(f"Error loading users: {e}")
+        # ensure file exists
+        if not os.path.exists(self.replica.users_store):
+            with open(self.replica.users_store, "w", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow(["username", "password"])
 
-        # Load messages
-        if os.path.exists(self.replica.messages_store):
-            try:
-                with open(self.replica.messages_store, "r", newline="") as file:
-                    reader = csv.reader(file)
-                    next(reader)  # Skip header
-                    for row in reader:
-                        sender, receiver, msg, timestamp_str, is_read = row
-                        timestamp = datetime.strptime(
-                            timestamp_str, "%Y-%m-%d %H:%M:%S.%f"
-                        )
-                        message = Message(sender, receiver, msg)
-                        message.timestamp = timestamp
+        # load users
+        try:
+            with open(self.replica.users_store, "r", newline="") as file:
+                reader = csv.reader(file)
+                next(reader)  # Skip header
+                for row in reader:
+                    username, password = row
+                    self.user_login_database[username] = User(username, password)
+            print(
+                f"Loaded {len(self.user_login_database)} users from {self.replica.users_store}"
+            )
+        except Exception as e:
+            print(f"Error loading users: {e}")
 
-                        # add to sender's messages
-                        if sender in self.user_login_database:
-                            self.user_login_database[sender].messages.append(message)
+        # same thing but for messages
+        if not os.path.exists(self.replica.messages_store):
+            with open(self.replica.messages_store, "w", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow(["sender", "receiver", "msg", "timestamp", "is_read"])
+        try:
+            with open(self.replica.messages_store, "r", newline="") as file:
+                reader = csv.reader(file)
+                next(reader)  # Skip header
+                for row in reader:
+                    sender, receiver, msg, timestamp_str, is_read = row
+                    timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S.%f")
+                    message = Message(sender, receiver, msg)
+                    message.timestamp = timestamp
 
-                        # add to receiver's messages or unread_messages
-                        if receiver in self.user_login_database:
-                            if is_read == "True":
-                                self.user_login_database[receiver].messages.append(
-                                    message
-                                )
-                            else:
-                                self.user_login_database[
-                                    receiver
-                                ].unread_messages.append(message)
-                print(f"Loaded messages from {self.replica.messages_store}")
-            except Exception as e:
-                print(f"Error loading messages: {e}")
+                    # add to sender's messages
+                    if sender in self.user_login_database:
+                        self.user_login_database[sender].messages.append(message)
 
-    def save_data(self):
+                    # add to receiver's messages or unread_messages
+                    if receiver in self.user_login_database:
+                        if is_read == "True":
+                            self.user_login_database[receiver].messages.append(message)
+                        else:
+                            self.user_login_database[receiver].unread_messages.append(
+                                message
+                            )
+            print(f"Loaded messages from {self.replica.messages_store}")
+        except Exception as e:
+            print(f"Error loading messages: {e}")
+
+    def save_data(self, user_login_db):
         """
         Save all user and message data to CSV files
         """
@@ -105,7 +109,7 @@ class Server(app_pb2_grpc.AppServicer):
             with open(self.replica.users_store, "w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(["username", "password"])
-                for username, user in self.user_login_database.items():
+                for username, user in user_login_db.items():
                     writer.writerow([username, user.password])
         except Exception as e:
             print(f"Error saving users: {e}")
@@ -285,8 +289,8 @@ class Server(app_pb2_grpc.AppServicer):
                 print(
                     f"Replica {self.replica.id} updating data from leader {source_id}"
                 )
-                self.user_login_database = received_user_db
                 self.active_users = received_active_users
+                self.save_data(received_user_db)
 
             else:
                 if self.leader_id == self.replica.id:
@@ -305,9 +309,6 @@ class Server(app_pb2_grpc.AppServicer):
                         operation=app_pb2.FAILURE,
                         info="Follower-to-follower sync not allowed",
                     )
-
-            # save changes to csv
-            self.save_data()
 
             return app_pb2.Response(
                 operation=app_pb2.SUCCESS,
@@ -329,55 +330,19 @@ class Server(app_pb2_grpc.AppServicer):
             incoming_active_users: Active users from another replica
         """
         # merge user database
+        merge_db = {}
         for username, incoming_user in incoming_user_db.items():
             if username not in self.user_login_database:
                 # new user, add to database
-                self.user_login_database[username] = incoming_user
+                merge_db[username] = incoming_user
             else:
-                # existing user, merge data
-                existing_user = self.user_login_database[username]
-
-                # get all message IDs from existing user
-                existing_msg_ids = {
-                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
-                    for msg in existing_user.messages
-                }
-                existing_unread_ids = {
-                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
-                    for msg in existing_user.unread_messages
-                }
-
-                # add non-duplicate messages
-                for msg in incoming_user.messages:
-                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
-                    if msg_id not in existing_msg_ids:
-                        existing_user.messages.append(msg)
-
-                # add non-duplicate unread messages
-                for msg in incoming_user.unread_messages:
-                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
-                    if (
-                        msg_id not in existing_unread_ids
-                        and msg_id not in existing_msg_ids
-                    ):
-                        existing_user.unread_messages.append(msg)
+                merge_db[username] = self.user_login_database[username]
 
         # merge active users
         for username, incoming_messages in incoming_active_users.items():
             if username not in self.active_users:
                 self.active_users[username] = incoming_messages
-            else:
-                # get existing message IDs
-                existing_msg_ids = {
-                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
-                    for msg in self.active_users[username]
-                }
-
-                # add non-duplicate messages
-                for msg in incoming_messages:
-                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
-                    if msg_id not in existing_msg_ids:
-                        self.active_users[username].append(msg)
+        self.save_data(merge_db)
 
     def sync_after_operation(self):
         """
