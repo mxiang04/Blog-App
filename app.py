@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 import os
 from dotenv import load_dotenv
 import tkinter as tk
@@ -15,7 +16,8 @@ from protos import app_pb2_grpc
 from concurrent import futures
 import signal
 import multiprocessing
-from consensus import REPLICAS
+from consensus import REPLICAS, Replica
+
 
 class ChatAppGUI:
     # Global connection ID counter
@@ -94,7 +96,6 @@ class ChatAppGUI:
 
         # auto-scroll
         self.notification_text.see(tk.END)
-
 
     def start_menu(self):
         """Initial menu to choose between Client or Server."""
@@ -550,48 +551,405 @@ class ChatAppGUI:
         else:
             messagebox.showerror("Error", "Log out unsuccessful!")
 
-
     def start_server(self):
-        """Starts the server in a separate thread."""
+        """Starts the server in a separate thread and displays replica management interface."""
         self.clear_frame()
-        tk.Label(self.main_frame, text="Server Started", font=("Arial", 14)).pack(
-            pady=10
+
+        # Create header
+        tk.Label(
+            self.main_frame, text="Server Running", font=("Arial", 14, "bold")
+        ).pack(pady=10)
+
+        # Create frame for replica list
+        replicas_frame = tk.Frame(self.main_frame)
+        replicas_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Create scrollable list view for replicas
+        list_frame = tk.Frame(replicas_frame)
+        list_frame.pack(fill="both", expand=True)
+
+        # Headers for the replica list
+        headers_frame = tk.Frame(list_frame)
+        headers_frame.pack(fill="x")
+
+        header_fields = [
+            "ID",
+            "Host",
+            "Port",
+            "Messages Store",
+            "Users Store",
+            "Actions",
+        ]
+        col_widths = [10, 15, 8, 20, 20, 15]
+
+        for i, header in enumerate(header_fields):
+            tk.Label(
+                headers_frame,
+                text=header,
+                font=("Arial", 10, "bold"),
+                width=col_widths[i],
+            ).grid(row=0, column=i, padx=5, pady=5, sticky="w")
+
+        # Create proper scrollable frame with both vertical and horizontal scrollbars
+        container_frame = tk.Frame(list_frame)
+        container_frame.pack(fill="both", expand=True)
+
+        # Add both scrollbars
+        v_scrollbar = tk.Scrollbar(container_frame, orient="vertical")
+        h_scrollbar = tk.Scrollbar(container_frame, orient="horizontal")
+
+        # Place scrollbars
+        v_scrollbar.pack(side="right", fill="y")
+        h_scrollbar.pack(side="bottom", fill="x")
+
+        # Create canvas with proper scrolling
+        canvas = tk.Canvas(container_frame)
+        canvas.pack(side="left", fill="both", expand=True)
+
+        # Connect scrollbars to canvas
+        v_scrollbar.config(command=canvas.yview)
+        h_scrollbar.config(command=canvas.xview)
+        canvas.config(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+
+        # Create inner frame for content
+        replica_list_frame = tk.Frame(canvas)
+
+        # Add the frame to the canvas
+        canvas_window = canvas.create_window(
+            (0, 0), window=replica_list_frame, anchor="nw"
         )
-        self.root.update_idletasks()  
-    
-        threading.Thread(target=self.start_server_processes, daemon=True).start()
+
+        # Configure canvas scrolling
+        def configure_canvas(event):
+            # Update the scrollregion to encompass the inner frame
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+            # Make sure the window expands properly
+            required_width = replica_list_frame.winfo_reqwidth()
+            required_height = replica_list_frame.winfo_reqheight()
+            canvas.config(
+                width=min(required_width, 800), height=min(required_height, 400)
+            )
+            canvas.itemconfig(canvas_window, width=required_width)
+
+        replica_list_frame.bind("<Configure>", configure_canvas)
+
+        # Allow mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        # Function to create unique commands for each button
+        def create_start_command(replica_id, replica_data):
+            return lambda: self.start_specific_replica(replica_data)
+
+        def create_remove_command(replica_id, replica_data):
+            return lambda: self.remove_replica(replica_data)
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Load replicas from JSON file
+        try:
+            with open("replicas.json", "r") as file:
+                replicas_data = json.load(file)
+                replicas = replicas_data.get("replicas", [])
+        except (FileNotFoundError, json.JSONDecodeError):
+            replicas = []
+
+        # Store button functions to prevent garbage collection
+        self.button_commands = []
+
+        # Display each replica
+        for i, replica in enumerate(replicas):
+            replica_id = replica.get("id", f"replica{i+1}")
+
+            for j, key in enumerate(
+                ["id", "host", "port", "messages_store", "users_store"]
+            ):
+                tk.Label(
+                    replica_list_frame,
+                    text=str(replica.get(key, "")),
+                    width=col_widths[j],
+                ).grid(row=i, column=j, padx=5, pady=2, sticky="w")
+
+            # Add action buttons for each replica
+            actions_frame = tk.Frame(replica_list_frame)
+            actions_frame.grid(row=i, column=5, padx=5, pady=2)
+
+            # Create specific command functions for this replica
+            start_cmd = create_start_command(replica_id, replica)
+            remove_cmd = create_remove_command(replica_id, replica)
+
+            # Store commands to prevent garbage collection
+            self.button_commands.append(start_cmd)
+            self.button_commands.append(remove_cmd)
+
+            # Create buttons with the specific commands
+            start_button = tk.Button(actions_frame, text="Start", command=start_cmd)
+            start_button.pack(side="left", padx=2)
+
+            remove_button = tk.Button(actions_frame, text="Remove", command=remove_cmd)
+            remove_button.pack(side="left", padx=2)
+
+        # Create form to add new replicas
+        add_frame = tk.LabelFrame(self.main_frame, text="Add New Replica")
+        add_frame.pack(fill="x", padx=10, pady=10)
+
+        form_fields = [
+            ("ID:", "id"),
+            ("Host:", "host"),
+            ("Port:", "port"),
+            ("Messages Store:", "messages_store"),
+            ("Users Store:", "users_store"),
+        ]
+
+        entry_widgets = {}
+
+        for i, (label_text, field_name) in enumerate(form_fields):
+            tk.Label(add_frame, text=label_text).grid(
+                row=i, column=0, padx=5, pady=5, sticky="e"
+            )
+            entry = tk.Entry(add_frame)
+            entry.grid(row=i, column=1, padx=5, pady=5, sticky="ew")
+            entry_widgets[field_name] = entry
+
+        # Add default values
+        if not replicas:
+            entry_widgets["id"].insert(0, "replica1")
+            entry_widgets["host"].insert(0, "localhost")
+            entry_widgets["port"].insert(0, "5001")
+            entry_widgets["messages_store"].insert(0, "replica1_messages.csv")
+            entry_widgets["users_store"].insert(0, "replica1_users.csv")
+        else:
+            # Suggest next replica number
+            next_num = len(replicas) + 1
+            entry_widgets["id"].insert(0, f"replica{next_num}")
+            entry_widgets["host"].insert(0, "localhost")
+            entry_widgets["port"].insert(0, f"{5000 + next_num}")
+            entry_widgets["messages_store"].insert(0, f"replica{next_num}_messages.csv")
+            entry_widgets["users_store"].insert(0, f"replica{next_num}_users.csv")
+
+        # Create a specific function for the add replica button
+        add_cmd = lambda: self.add_new_replica(entry_widgets)
+        self.button_commands.append(add_cmd)
+
+        # Add button to create new replica
+        tk.Button(add_frame, text="Add Replica", command=add_cmd).grid(
+            row=len(form_fields), column=0, columnspan=2, pady=10
+        )
+
+        # Add button to start all replicas
+        tk.Button(
+            self.main_frame,
+            text="Start All Replicas",
+            font=("Arial", 12),
+            bg="#4CAF50",
+            fg="black",
+            command=self.start_server_processes,
+        ).pack(pady=10)
+
+        self.root.update_idletasks()
+
+    def add_new_replica(self, entry_widgets):
+        """Adds a new replica to the JSON file and updates the UI."""
+        # Get values from entry widgets
+        new_replica = {field: widget.get() for field, widget in entry_widgets.items()}
+
+        # Convert port to integer
+        try:
+            new_replica["port"] = int(new_replica["port"])
+        except ValueError:
+            messagebox.showerror("Invalid Port", "Port must be a number")
+            return
+
+        # Load existing replicas
+        try:
+            with open("replicas.json", "r") as file:
+                replicas_data = json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            replicas_data = {"replicas": []}
+
+        # Add new replica
+        replicas_data["replicas"].append(new_replica)
+
+        # Save updated replicas
+        with open("replicas.json", "w") as file:
+            json.dump(replicas_data, file, indent=2)
+
+        # Update the global REPLICAS dictionary to include the new replica
+        replica_obj = Replica(
+            new_replica["id"],
+            new_replica["host"],
+            new_replica["port"],
+            new_replica["messages_store"],
+            new_replica["users_store"],
+        )
+        REPLICAS[new_replica["id"]] = replica_obj
+
+        # Restart server view to refresh the list
+        self.start_server()
+
+        messagebox.showinfo(
+            "Success", f"Replica {new_replica['id']} added successfully"
+        )
+
+    def remove_replica(self, replica):
+        """Removes a replica from the JSON file and updates the UI."""
+        # Confirm deletion
+        confirm = messagebox.askyesno(
+            "Confirm Deletion",
+            f"Are you sure you want to remove replica {replica['id']}?",
+        )
+
+        if not confirm:
+            return
+
+        # Load existing replicas
+        with open("replicas.json", "r") as file:
+            replicas_data = json.load(file)
+
+        # Remove the selected replica
+        replicas_data["replicas"] = [
+            r for r in replicas_data["replicas"] if r["id"] != replica["id"]
+        ]
+
+        # Save updated replicas
+        with open("replicas.json", "w") as file:
+            json.dump(replicas_data, file, indent=2)
+
+        # Remove from the global REPLICAS dictionary if it exists
+        if replica["id"] in REPLICAS:
+            del REPLICAS[replica["id"]]
+
+        # Restart server view to refresh the list
+        self.start_server()
+
+        messagebox.showinfo("Success", f"Replica {replica['id']} removed successfully")
+
+    def start_specific_replica(self, replica):
+        """Starts a specific replica."""
+        # Create a replica config object
+        replica_obj = Replica(
+            replica["id"],
+            replica["host"],
+            replica["port"],
+            replica["messages_store"],
+            replica["users_store"],
+        )
+
+        # Launch a single replica process
+        try:
+            p = multiprocessing.Process(
+                target=run_server,  # Use standalone function
+                args=(replica_obj,),
+            )
+            p.start()
+
+            # Clear the frame and show "Server Running" message
+            self.clear_frame()
+            tk.Label(
+                self.main_frame,
+                text=f"Server Running\nReplica {replica['id']} started on {replica['host']}:{replica['port']}",
+                font=("Arial", 14, "bold"),
+            ).pack(pady=10)
+
+            # Add a button to go back to the server management interface
+            tk.Button(
+                self.main_frame,
+                text="Back to Server Management",
+                font=("Arial", 12),
+                command=self.start_server,
+            ).pack(pady=10)
+
+        except Exception as e:
+            messagebox.showerror("Server Error", str(e))
 
     def start_server_processes(self):
         """Handles launching server processes in a separate thread."""
+        # First, load replicas from JSON
+        try:
+            with open("replicas.json", "r") as file:
+                replicas_data = json.load(file)
+                replicas = replicas_data.get("replicas", [])
+        except (FileNotFoundError, json.JSONDecodeError):
+            replicas = []
+            messagebox.showwarning("Warning", "No replicas found in replicas.json")
+            return
+
+        # Create replica config objects and update REPLICAS dictionary
+        for replica in replicas:
+            replica_obj = Replica(
+                replica["id"],
+                replica["host"],
+                replica["port"],
+                replica["messages_store"],
+                replica["users_store"],
+            )
+            REPLICAS[replica["id"]] = replica_obj
+
+        # Start processes for each replica
         processes = []
+        started_replicas = []
         try:
             for replica_id in REPLICAS:
                 p = multiprocessing.Process(
-                    target=run_server, args=(REPLICAS[replica_id],),
+                    target=run_server,  # Use standalone function
+                    args=(REPLICAS[replica_id],),
                 )
                 p.start()
                 processes.append(p)
+                started_replicas.append(replica_id)
+
+            # Clear the frame and show "Servers Running" message
+            self.clear_frame()
+
+            tk.Label(
+                self.main_frame, text="Servers Running", font=("Arial", 14, "bold")
+            ).pack(pady=10)
+
+            # Show list of started replicas
+            replicas_text = "\n".join(
+                [f"Replica {r_id} started" for r_id in started_replicas]
+            )
+            tk.Label(
+                self.main_frame,
+                text=f"Started {len(processes)} replica(s):\n{replicas_text}",
+                font=("Arial", 12),
+                justify="left",
+            ).pack(pady=10)
+
+            # Add a button to go back to the server management interface
+            tk.Button(
+                self.main_frame,
+                text="Back to Server Management",
+                font=("Arial", 12),
+                command=self.start_server,
+            ).pack(pady=10)
+
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Server Error", str(e)))
+            messagebox.showerror("Server Error", str(e))
 
     def on_exit(self):
         self.cleanup()
         self.root.destroy()
 
-def run_server(replica):
-        """Runs the server."""
-        try:
-            print("run server")
-            server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-            server_object = Server(replica)
-            app_pb2_grpc.add_AppServicer_to_server(server_object, server)  # Correct registration
-            server.add_insecure_port(f"{replica.host}:{replica.port}")
-            server.start()
-            print(f"Server started, listening on {replica.host}:{replica.port}")
-            server.wait_for_termination()
 
-        except Exception as e:
-            logging.error("Server Error")
+def run_server(replica):
+    """Runs the server."""
+    try:
+        print("run server")
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        server_object = Server(replica)
+        app_pb2_grpc.add_AppServicer_to_server(
+            server_object, server
+        )  # Correct registration
+        server.add_insecure_port(f"{replica.host}:{replica.port}")
+        server.start()
+        print(f"Server started, listening on {replica.host}:{replica.port}")
+        server.wait_for_termination()
+
+    except Exception as e:
+        logging.error("Server Error")
+
 
 if __name__ == "__main__":
     root = tk.Tk()
