@@ -142,8 +142,10 @@ class Server(app_pb2_grpc.AppServicer):
                     # Deserialize and update our data
                     deserialized_data = deserialize_data(response.info[0])
                     if deserialized_data and len(deserialized_data) == 2:
-                        self.user_login_database, self.active_users = deserialized_data
-                        self.save_data(self.user_login_database)
+                        leader_user_db, leader_active_users = deserialized_data
+                        self.user_login_database = self.merge_data(
+                            leader_user_db, leader_active_users
+                        )
                         print(
                             f"Data synchronized successfully from leader {self.leader_id}"
                         )
@@ -175,8 +177,9 @@ class Server(app_pb2_grpc.AppServicer):
         Load users and messages from CSV files if they exist, otherwise create empty CSV files.
         """
         # ensure file exists
-        if not os.path.exists(self.replica.users_store):
-            os.makedirs(os.path.dirname(self.replica.users_store), exist_ok=True)
+        directory = os.path.dirname(self.replica.users_store)
+        if directory:  # Only attempt to create if there's a directory path
+            os.makedirs(directory, exist_ok=True)
             with open(self.replica.users_store, "w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(["username", "password"])
@@ -196,8 +199,9 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"Error loading users: {e}")
 
         # same thing but for messages
-        if not os.path.exists(self.replica.messages_store):
-            os.makedirs(os.path.dirname(self.replica.messages_store), exist_ok=True)
+        directory = os.path.dirname(self.replica.messages_store)
+        if directory:  # Only attempt to create if there's a directory path
+            os.makedirs(directory, exist_ok=True)
             with open(self.replica.messages_store, "w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(["sender", "receiver", "msg", "timestamp", "is_read"])
@@ -566,7 +570,6 @@ class Server(app_pb2_grpc.AppServicer):
                 print(
                     f"Replica {self.replica.id} updating data from leader {source_id}"
                 )
-
                 # Update in-memory data
                 self.active_users = received_active_users
                 # Then save to disk
@@ -663,6 +666,7 @@ class Server(app_pb2_grpc.AppServicer):
 
         # Update our database with the merged result
         self.save_data(merge_db)
+        return merge_db
 
     def sync_after_operation(self):
         """
