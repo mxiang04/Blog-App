@@ -23,27 +23,151 @@ class Server(app_pb2_grpc.AppServicer):
         self.active_users = {}
         self.replica = replica
 
-        self.leader_id = min(REPLICAS.keys())
-        self.leader_port = REPLICAS[self.leader_id].port
-        self.leader_host = REPLICAS[self.leader_id].host
-
-        print(f"LEADER {self.leader_id}")
+        # Initialize with self as leader by default
+        self.leader_id = replica.id
+        self.leader_port = replica.port
+        self.leader_host = replica.host
 
         self.replica_keys = list(REPLICAS.keys())
         self.election_lock = FileLock("election.lock")
 
+        # Initialize stub to this replica first (will connect to other replicas later)
         channel = grpc.insecure_channel(f"{self.replica.host}:{self.replica.port}")
         self.replica_stub = app_pb2_grpc.AppStub(channel)
 
         self.running = False
-        self.REPLICA_STUBS = None
+        self.REPLICA_STUBS = {}  # Initialize as empty dict instead of None
+        self.discovered_replicas = set([replica.id])  # Start with self-awareness
 
-        time.sleep(3)
+        # Start discovery and coordination threads
+        threading.Thread(target=self.discover_replicas, daemon=True).start()
+        time.sleep(1)  # Short delay to initialize
 
+        # Start heartbeat after discovery has a chance to run
         self.start_heartbeat()
-        if replica.id == self.leader_id:
-            self.load_data()
-            self.sync_data_to_followers()
+
+        # Load data initially - will be overwritten if not actually leader
+        self.load_data()
+
+        print(
+            f"Replica {self.replica.id} started. Currently believes it is the leader."
+        )
+        print(f"Discovering other replicas and determining true leader...")
+
+    def discover_replicas(self):
+        """Continuously tries to discover other replicas and determine the leader"""
+        while True:
+            self.update_active_replicas()
+            self.determine_true_leader()
+            time.sleep(5)  # Check for new replicas every 5 seconds
+
+    def update_active_replicas(self):
+        """Try to connect to all configured replicas to see which ones are active"""
+        for replica_id, replica_info in REPLICAS.items():
+            if replica_id in self.discovered_replicas:
+                continue  # Already discovered
+
+            try:
+                # Try to establish connection
+                with grpc.insecure_channel(
+                    f"{replica_info.host}:{replica_info.port}"
+                ) as channel:
+                    stub = app_pb2_grpc.AppStub(channel)
+                    # Simple heartbeat to check if alive
+                    response = stub.RPCHeartbeat(app_pb2.Request())
+                    if response.operation == app_pb2.SUCCESS:
+                        print(f"Discovered new replica: {replica_id}")
+                        self.discovered_replicas.add(replica_id)
+
+                        # Create a persistent stub for this replica
+                        if replica_id not in self.REPLICA_STUBS:
+                            persistent_channel = grpc.insecure_channel(
+                                f"{replica_info.host}:{replica_info.port}"
+                            )
+                            self.REPLICA_STUBS[replica_id] = app_pb2_grpc.AppStub(
+                                persistent_channel
+                            )
+            except Exception as e:
+                # Can't connect, replica not available yet
+                pass
+
+    def determine_true_leader(self):
+        """
+        Determine the true leader among all discovered replicas
+        and synchronize data if needed
+        """
+        if not self.discovered_replicas:
+            return
+
+        # The leader should be the lowest ID among discovered replicas
+        potential_leader_id = min(self.discovered_replicas)
+
+        # If we're not currently using this leader, update
+        if self.leader_id != potential_leader_id:
+            old_leader = self.leader_id
+            self.leader_id = potential_leader_id
+            self.leader_host = REPLICAS[potential_leader_id].host
+            self.leader_port = REPLICAS[potential_leader_id].port
+
+            print(f"Updated leader from {old_leader} to {potential_leader_id}")
+
+            # If we just became the leader, sync data to followers
+            if self.leader_id == self.replica.id and old_leader != self.replica.id:
+                print(
+                    f"This replica ({self.replica.id}) is now the leader. Syncing data to followers."
+                )
+                self.sync_data_to_followers()
+            # If we just stopped being the leader, request latest data
+            elif old_leader == self.replica.id and self.leader_id != self.replica.id:
+                print(
+                    f"This replica ({self.replica.id}) is no longer the leader. Requesting data from new leader."
+                )
+                self.request_data_from_leader()
+
+    def request_data_from_leader(self):
+        """Request the latest data from the current leader"""
+        if self.leader_id == self.replica.id:
+            return  # We are the leader, no need to request
+
+        try:
+            with grpc.insecure_channel(
+                f"{self.leader_host}:{self.leader_port}"
+            ) as channel:
+                leader_stub = app_pb2_grpc.AppStub(channel)
+                request = app_pb2.Request(info=["initial_sync"])
+                response = leader_stub.RPCRequestLeaderData(request)
+
+                if response.operation == app_pb2.SUCCESS and response.info:
+                    print(f"Received initial data from leader {self.leader_id}")
+                    # Deserialize and update our data
+                    deserialized_data = deserialize_data(response.info[0])
+                    if deserialized_data and len(deserialized_data) == 2:
+                        self.user_login_database, self.active_users = deserialized_data
+                        print(
+                            f"Data synchronized successfully from leader {self.leader_id}"
+                        )
+                        return True
+        except Exception as e:
+            print(f"Failed to request data from leader: {e}")
+            # Leader might be down, reevaluate
+            with self.election_lock:
+                if self.leader_id in self.discovered_replicas:
+                    self.discovered_replicas.remove(self.leader_id)
+                self.determine_true_leader()
+
+        return False
+
+    def RPCRequestLeaderData(self, request, context):
+        """Handle requests for initial data from followers"""
+        if self.leader_id != self.replica.id:
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info="Not the leader, cannot provide data"
+            )
+
+        # Serialize current data state
+        serialized_data = serialize_data(self.user_login_database, self.active_users)
+
+        return app_pb2.Response(operation=app_pb2.SUCCESS, info=[serialized_data])
 
     def load_data(self):
         """
@@ -51,6 +175,7 @@ class Server(app_pb2_grpc.AppServicer):
         """
         # ensure file exists
         if not os.path.exists(self.replica.users_store):
+            os.makedirs(os.path.dirname(self.replica.users_store), exist_ok=True)
             with open(self.replica.users_store, "w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(["username", "password"])
@@ -71,6 +196,7 @@ class Server(app_pb2_grpc.AppServicer):
 
         # same thing but for messages
         if not os.path.exists(self.replica.messages_store):
+            os.makedirs(os.path.dirname(self.replica.messages_store), exist_ok=True)
             with open(self.replica.messages_store, "w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(["sender", "receiver", "msg", "timestamp", "is_read"])
@@ -106,6 +232,7 @@ class Server(app_pb2_grpc.AppServicer):
         """
         # save users
         try:
+            os.makedirs(os.path.dirname(self.replica.users_store), exist_ok=True)
             with open(self.replica.users_store, "w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(["username", "password"])
@@ -116,6 +243,7 @@ class Server(app_pb2_grpc.AppServicer):
 
         # save messages
         try:
+            os.makedirs(os.path.dirname(self.replica.messages_store), exist_ok=True)
             with open(self.replica.messages_store, "w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(
@@ -123,7 +251,7 @@ class Server(app_pb2_grpc.AppServicer):
                 )
 
                 # process all users
-                for username, user in self.user_login_database.items():
+                for username, user in user_login_db.items():
                     # save read messages
                     for msg in user.messages:
                         # we only save messages where this user is the sender to avoid duplicates
@@ -167,9 +295,17 @@ class Server(app_pb2_grpc.AppServicer):
             )
             return False
 
-        # initialize replica stubs if not already done
-        if not self.REPLICA_STUBS:
-            self.REPLICA_STUBS = get_total_stubs()
+        # Make sure we have stubs for all discovered replicas
+        for replica_id in self.discovered_replicas:
+            if replica_id != self.replica.id and replica_id not in self.REPLICA_STUBS:
+                try:
+                    replica_info = REPLICAS[replica_id]
+                    channel = grpc.insecure_channel(
+                        f"{replica_info.host}:{replica_info.port}"
+                    )
+                    self.REPLICA_STUBS[replica_id] = app_pb2_grpc.AppStub(channel)
+                except Exception as e:
+                    print(f"Error creating stub for replica {replica_id}: {e}")
 
         # serialize data
         serialized_data = serialize_data(self.user_login_database, self.active_users)
@@ -181,29 +317,45 @@ class Server(app_pb2_grpc.AppServicer):
 
         # track successful syncs
         success_count = 0
-        total_followers = len(self.replica_keys) - 1  # Exclude self
+        total_followers = len(self.discovered_replicas) - 1  # Exclude self
+
+        if total_followers == 0:
+            # No followers to sync to, we're the only replica
+            return True
 
         # send to followers
-        for follower_id in self.replica_keys:
+        for follower_id in list(
+            self.discovered_replicas
+        ):  # Use a copy to avoid modification during iteration
             if follower_id == self.replica.id:
                 continue
 
             try:
-                follower_stub = self.REPLICA_STUBS[follower_id]
-                response = follower_stub.RPCSyncData(sync_request)
+                follower_stub = self.REPLICA_STUBS.get(follower_id)
+                if follower_stub:
+                    response = follower_stub.RPCSyncData(sync_request)
 
-                if response.operation == app_pb2.SUCCESS:
-                    success_count += 1
-                    print(f"Successfully synced data to follower {follower_id}")
-                else:
-                    print(
-                        f"Failed to sync data to follower {follower_id}: {response.info}"
-                    )
+                    if response.operation == app_pb2.SUCCESS:
+                        success_count += 1
+                        print(f"Successfully synced data to follower {follower_id}")
+                    else:
+                        print(
+                            f"Failed to sync data to follower {follower_id}: {response.info}"
+                        )
             except grpc.RpcError as e:
                 print(f"Error syncing data to follower {follower_id}: {e}")
+                # Remove from discovered replicas if not reachable
+                if follower_id in self.discovered_replicas:
+                    self.discovered_replicas.remove(follower_id)
+                if follower_id in self.REPLICA_STUBS:
+                    del self.REPLICA_STUBS[follower_id]
 
-        print(f"Synced data to {success_count}/{total_followers} followers")
-        return success_count > 0
+        if total_followers > 0:
+            print(f"Synced data to {success_count}/{total_followers} followers")
+
+        # Even if we couldn't sync to all followers, consider it a success if at least one sync worked
+        # or if we're the only replica
+        return success_count > 0 or total_followers == 0
 
     def sync_data_to_leader(self):
         """
@@ -247,10 +399,12 @@ class Server(app_pb2_grpc.AppServicer):
 
         except grpc.RpcError as e:
             print(f"Error sending data to leader: {e}")
-            # this might indicate leader is down
+            # This might indicate leader is down
             with self.election_lock:
-                print("Leader may be down, triggering election")
-                self.elect_leader()
+                print("Leader may be down, triggering reevaluation")
+                if self.leader_id in self.discovered_replicas:
+                    self.discovered_replicas.remove(self.leader_id)
+                self.determine_true_leader()
             return False
 
     def RPCSyncData(self, request, context):
@@ -275,6 +429,20 @@ class Server(app_pb2_grpc.AppServicer):
                 f"Received sync data from {'leader' if is_from_leader else 'follower'} {source_id}"
             )
 
+            # Add to discovered replicas
+            if source_id not in self.discovered_replicas:
+                self.discovered_replicas.add(source_id)
+                print(f"Added {source_id} to discovered replicas via sync")
+
+                # Create a persistent stub for this replica if we don't have one
+                if source_id not in self.REPLICA_STUBS:
+                    replica_info = REPLICAS.get(source_id)
+                    if replica_info:
+                        channel = grpc.insecure_channel(
+                            f"{replica_info.host}:{replica_info.port}"
+                        )
+                        self.REPLICA_STUBS[source_id] = app_pb2_grpc.AppStub(channel)
+
             # deserialize
             deserialized_data = deserialize_data(serialized_data)
 
@@ -289,7 +457,11 @@ class Server(app_pb2_grpc.AppServicer):
                 print(
                     f"Replica {self.replica.id} updating data from leader {source_id}"
                 )
+
+                # Update in-memory data
+                self.user_login_database = received_user_db
                 self.active_users = received_active_users
+                # Then save to disk
                 self.save_data(received_user_db)
 
             else:
@@ -329,19 +501,60 @@ class Server(app_pb2_grpc.AppServicer):
             incoming_user_db: User database from another replica
             incoming_active_users: Active users from another replica
         """
-        # merge user database
-        merge_db = {}
+        # merge user database - keeping both databases and preserving local users
+        merge_db = self.user_login_database.copy()
         for username, incoming_user in incoming_user_db.items():
-            if username not in self.user_login_database:
+            if username not in merge_db:
                 # new user, add to database
                 merge_db[username] = incoming_user
             else:
-                merge_db[username] = self.user_login_database[username]
+                # Existing user, merge messages
+                existing_user = merge_db[username]
+
+                # Create sets of message identifiers to avoid duplicates
+                existing_message_ids = {
+                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    for msg in existing_user.messages
+                }
+                existing_unread_ids = {
+                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    for msg in existing_user.unread_messages
+                }
+
+                # Add non-duplicate messages
+                for msg in incoming_user.messages:
+                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    if msg_id not in existing_message_ids:
+                        existing_user.messages.append(msg)
+                        existing_message_ids.add(msg_id)
+
+                for msg in incoming_user.unread_messages:
+                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    if (
+                        msg_id not in existing_unread_ids
+                        and msg_id not in existing_message_ids
+                    ):
+                        existing_user.unread_messages.append(msg)
+                        existing_unread_ids.add(msg_id)
 
         # merge active users
         for username, incoming_messages in incoming_active_users.items():
             if username not in self.active_users:
                 self.active_users[username] = incoming_messages
+            else:
+                # Add any messages not already in active_users
+                existing_active_ids = {
+                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    for msg in self.active_users[username]
+                }
+
+                for msg in incoming_messages:
+                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
+                    if msg_id not in existing_active_ids:
+                        self.active_users[username].append(msg)
+
+        # Update our database with the merged result
+        self.user_login_database = merge_db
         self.save_data(merge_db)
 
     def sync_after_operation(self):
@@ -349,109 +562,170 @@ class Server(app_pb2_grpc.AppServicer):
         Helper function that should be called after operations that modify data.
         Determines whether to sync to leader or followers based on replica role.
         """
+        # Always save locally first
+        self.save_data(self.user_login_database)
+
         if self.leader_id == self.replica.id:
             # sync to followers
-            self.sync_data_to_followers()
+            return self.sync_data_to_followers()
         else:
             # sync to leader
-            self.sync_data_to_leader()
+            return self.sync_data_to_leader()
 
     def elect_leader(self):
-        print("inside electing leader?2")
-        if self.leader_id in self.replica_keys:
-            print("inside electing leader?3")
-            old_id = self.leader_id
-            self.replica_keys.remove(old_id)
+        """Handle leader election when a leader failure is detected"""
+        print("Initiating leader election")
 
-            self.leader_id = min(self.replica_keys)
+        # Get currently active replicas
+        active_replicas = list(self.discovered_replicas)
 
-            self.leader_port = REPLICAS[self.leader_id].port
-            self.leader_host = REPLICAS[self.leader_id].host
+        if self.leader_id in active_replicas:
+            active_replicas.remove(self.leader_id)
 
-            print(f"New leader values {self.leader_id}")
-            self.notify_replicas_new_leader()
+        if not active_replicas:
+            # If no other replicas are known, become the leader
+            new_leader_id = self.replica.id
+        else:
+            # Choose the replica with the lowest ID
+            new_leader_id = min(active_replicas)
+
+        if new_leader_id == self.leader_id:
+            # No change needed
+            return
+
+        old_leader_id = self.leader_id
+        self.leader_id = new_leader_id
+        self.leader_host = REPLICAS[new_leader_id].host
+        self.leader_port = REPLICAS[new_leader_id].port
+
+        print(f"Leader changed from {old_leader_id} to {new_leader_id}")
+
+        # Notify other replicas
+        self.notify_replicas_new_leader()
+
+        # If we're the new leader, start leader duties
+        if self.leader_id == self.replica.id:
+            print(f"This replica ({self.replica.id}) is now the leader")
+            self.sync_data_to_followers()
 
     def start_heartbeat(self):
         threading.Thread(target=self.send_beats, daemon=True).start()
 
-    def servers_running(self):
-        request = app_pb2.HeartbeatRequest()
-        while True:
-            success = 0
-            print("redoing")
-            for replica_id in self.replica_keys:
-                if replica_id == self.replica.id:
-                    sucess += 1
-                else:
-                    try:
-                        res = self.replica_stub.RPCHeartbeat(request)
-                        if res == app_pb2.SUCCESS:
-                            success += 1
-                    except grpc.RpcError as e:
-                        print(f"Not all servers running - please wait {success}")
-        # return success == len(REPLICAS)
-
     def notify_replicas_new_leader(self):
-        print(f"notify replicas {self.leader_id} from {self.replica.id}")
+        """Notify all discovered replicas about the new leader"""
+        print(f"Notifying replicas about new leader: {self.leader_id}")
+
         request = app_pb2.Request(
-            info=[self.leader_id, self.leader_host, str(self.leader_port)]
+            info=[str(self.leader_id), self.leader_host, str(self.leader_port)]
         )
-        for replica_id in self.replica_keys:
+
+        for replica_id in list(
+            self.discovered_replicas
+        ):  # Use a copy for safe iteration
             if replica_id == self.replica.id:
                 continue
+
             try:
-                res = self.replica_stub.RPCUpdateLeader(request)
-                print(f"Notified {replica_id} of new leader {self.leader_id}")
-            except grpc.RpcError as e:
-                print(f"Failed to notify {replica_id}: {e}")
+                if replica_id not in self.REPLICA_STUBS:
+                    replica_info = REPLICAS[replica_id]
+                    channel = grpc.insecure_channel(
+                        f"{replica_info.host}:{replica_info.port}"
+                    )
+                    self.REPLICA_STUBS[replica_id] = app_pb2_grpc.AppStub(channel)
+
+                replica_stub = self.REPLICA_STUBS[replica_id]
+                response = replica_stub.RPCUpdateLeader(request)
+
+                if response.operation == app_pb2.SUCCESS:
+                    print(
+                        f"Successfully notified replica {replica_id} about new leader"
+                    )
+                else:
+                    print(f"Failed to notify replica {replica_id}: {response.info}")
+            except Exception as e:
+                print(f"Error notifying replica {replica_id}: {e}")
+                # Remove from discovered replicas if not reachable
+                if replica_id in self.discovered_replicas:
+                    self.discovered_replicas.remove(replica_id)
+                if replica_id in self.REPLICA_STUBS:
+                    del self.REPLICA_STUBS[replica_id]
 
     def send_beats(self):
-        time.sleep(5)  # Wait for servers to initialize
+        """Send heartbeats to the leader to detect failures"""
+        # Wait for initial startup to complete
+        time.sleep(3)
+
         while True:
+            # Don't send heartbeats if we're the leader
             if self.leader_id == self.replica.id:
                 time.sleep(self.HEART_BEAT_FREQUENCY)
                 continue
-            if self.leader_port and self.leader_host and self.leader_id:
+
+            if self.leader_id and self.leader_host and self.leader_port:
                 try:
                     with grpc.insecure_channel(
                         f"{self.leader_host}:{self.leader_port}"
                     ) as channel:
                         stub = app_pb2_grpc.AppStub(channel)
                         response = stub.RPCHeartbeat(app_pb2.Request())
+                        # Leader is alive, no need to do anything
                 except grpc.RpcError as e:
                     with self.election_lock:
-                        print(f"Heartbeat failed: {e}")
+                        print(f"Heartbeat to leader failed: {e}")
                         print(
-                            f"Triggered by {self.replica.id} with leader {self.leader_host}:{self.leader_port}"
+                            f"Triggered by {self.replica.id} with leader {self.leader_id}"
                         )
+                        # Leader is down, initiate election
+                        if self.leader_id in self.discovered_replicas:
+                            self.discovered_replicas.remove(self.leader_id)
+                        if self.leader_id in self.REPLICA_STUBS:
+                            del self.REPLICA_STUBS[self.leader_id]
                         self.elect_leader()
-                        print("Electing new leader")
+
             time.sleep(self.HEART_BEAT_FREQUENCY)
 
     def RPCHeartbeat(self, request, context):
+        """Handle heartbeat requests from other replicas"""
+        # Update discovered replicas if this is a new client
+        client_info = context.peer()
+        if client_info:
+            # Extract client ID if possible (implementation-specific)
+            # Add logic here if you want to track which replicas are sending heartbeats
+            pass
+
         return app_pb2.Response(operation=app_pb2.SUCCESS)
 
     def RPCUpdateLeader(self, request, context):
-        print(f"updating leader {request.info}")
+        """Handle leader update notifications from other replicas"""
         if len(request.info) != 3:
             return app_pb2.Response(
-                operation=app_pb2.FAILURE, info="Update Leader Request Failed"
+                operation=app_pb2.FAILURE, info="Update Leader Request Invalid"
             )
-        leader_id, leader_host, leader_port = (
-            request.info[0],
-            request.info[1],
-            request.info[2],
-        )
-        print(f"new leader lection {leader_id}")
 
-        if self.leader_id in self.replica_keys:
-            self.replica_keys.remove(self.leader_id)
+        try:
+            new_leader_id = int(request.info[0])
+            new_leader_host = request.info[1]
+            new_leader_port = request.info[2]
 
-            self.leader_id = leader_id
-            self.leader_host = leader_host
-            self.leader_port = leader_port
+            print(f"Received leader update: new leader is {new_leader_id}")
 
-        return app_pb2.Response(operation=app_pb2.SUCCESS, info="")
+            old_leader_id = self.leader_id
+            self.leader_id = new_leader_id
+            self.leader_host = new_leader_host
+            self.leader_port = new_leader_port
+
+            # If we're the new leader, start leader duties
+            if self.leader_id == self.replica.id and old_leader_id != self.replica.id:
+                print(f"This replica ({self.replica.id}) is now the leader")
+                self.sync_data_to_followers()
+
+            return app_pb2.Response(
+                operation=app_pb2.SUCCESS, info=f"Leader updated to {new_leader_id}"
+            )
+        except Exception as e:
+            return app_pb2.Response(
+                operation=app_pb2.FAILURE, info=f"Leader update failed: {e}"
+            )
 
     def check_valid_user(self, username):
         """
