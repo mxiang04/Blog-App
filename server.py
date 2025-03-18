@@ -143,6 +143,7 @@ class Server(app_pb2_grpc.AppServicer):
                     deserialized_data = deserialize_data(response.info[0])
                     if deserialized_data and len(deserialized_data) == 2:
                         self.user_login_database, self.active_users = deserialized_data
+                        self.save_data(self.user_login_database)
                         print(
                             f"Data synchronized successfully from leader {self.leader_id}"
                         )
