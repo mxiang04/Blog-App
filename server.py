@@ -232,7 +232,9 @@ class Server(app_pb2_grpc.AppServicer):
         """
         # save users
         try:
-            os.makedirs(os.path.dirname(self.replica.users_store), exist_ok=True)
+            directory = os.path.dirname(self.replica.users_store)
+            if directory:  # Only attempt to create if there's a directory path
+                os.makedirs(directory, exist_ok=True)
             with open(self.replica.users_store, "w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(["username", "password"])
@@ -243,7 +245,9 @@ class Server(app_pb2_grpc.AppServicer):
 
         # save messages
         try:
-            os.makedirs(os.path.dirname(self.replica.messages_store), exist_ok=True)
+            directory = os.path.dirname(self.replica.messages_store)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
             with open(self.replica.messages_store, "w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(
@@ -295,6 +299,13 @@ class Server(app_pb2_grpc.AppServicer):
             )
             return False
 
+        total_followers = len(self.discovered_replicas) - 1  # Exclude self
+
+        if total_followers == 0:
+            # No followers to sync to, we're the only replica
+            print("No followers detected. Data has been saved locally only.")
+            return True
+
         # Make sure we have stubs for all discovered replicas
         for replica_id in self.discovered_replicas:
             if replica_id != self.replica.id and replica_id not in self.REPLICA_STUBS:
@@ -317,7 +328,6 @@ class Server(app_pb2_grpc.AppServicer):
 
         # track successful syncs
         success_count = 0
-        total_followers = len(self.discovered_replicas) - 1  # Exclude self
 
         if total_followers == 0:
             # No followers to sync to, we're the only replica
@@ -407,6 +417,104 @@ class Server(app_pb2_grpc.AppServicer):
                 self.determine_true_leader()
             return False
 
+    def RPCGetLeaderInfo(self, request, context):
+        return app_pb2.Response(operation=app_pb2.SUCCESS, info=f"{self.leader_id}")
+
+    def BroadcastUpdate(self, request, method):
+        """
+        Broadcast an update to all backup replicas.
+        Modified to handle missing replicas and be fault-tolerant.
+        """
+        print("Inside broadcast")
+
+        # If not the leader, don't broadcast
+        if not self.leader_id == self.replica.id:
+            return False
+
+        # Refresh stubs if needed
+        if not self.REPLICA_STUBS:
+            try:
+                self.REPLICA_STUBS = get_total_stubs()
+                print("Initialized replica stubs")
+            except Exception as e:
+                print(f"Error initializing stubs: {e}")
+                # Continue with empty stubs, we'll handle errors per replica
+                self.REPLICA_STUBS = {}
+
+        success_count = 0
+        active_replicas = 0
+
+        # Use discovered_replicas to know which replicas are actually available
+        for backup_replica_id in list(self.discovered_replicas):
+            if backup_replica_id == self.replica.id:
+                continue
+
+            active_replicas += 1
+
+            # Safely get or create the stub
+            backup_stub = None
+            try:
+                if backup_replica_id in self.REPLICA_STUBS:
+                    backup_stub = self.REPLICA_STUBS[backup_replica_id]
+                else:
+                    # Create a new stub if missing
+                    replica_info = REPLICAS.get(backup_replica_id)
+                    if replica_info:
+                        channel = grpc.insecure_channel(
+                            f"{replica_info.host}:{replica_info.port}"
+                        )
+                        backup_stub = app_pb2_grpc.AppStub(channel)
+                        self.REPLICA_STUBS[backup_replica_id] = backup_stub
+            except Exception as e:
+                print(f"Error creating stub for replica {backup_replica_id}: {e}")
+                # Remove from discovered if we can't connect
+                if backup_replica_id in self.discovered_replicas:
+                    self.discovered_replicas.remove(backup_replica_id)
+                continue
+
+            # Skip if we couldn't get a valid stub
+            if not backup_stub:
+                print(f"No valid stub for replica {backup_replica_id}, skipping")
+                continue
+
+            # Try to call the method
+            try:
+                rpc_method = getattr(backup_stub, method, None)
+                if rpc_method:
+                    res = rpc_method(request)
+                    status = res.operation
+                    if status == app_pb2.SUCCESS:
+                        success_count += 1
+                        print(f"Successfully broadcast to replica {backup_replica_id}")
+                    else:
+                        print(
+                            f"Broadcast to replica {backup_replica_id} failed: {res.info}"
+                        )
+                else:
+                    print(
+                        f"Method {method} not found on stub for replica {backup_replica_id}"
+                    )
+            except grpc.RpcError as e:
+                print(f"RPC error broadcasting to replica {backup_replica_id}: {e}")
+                # Remove from discovered replicas if communication fails
+                if backup_replica_id in self.discovered_replicas:
+                    self.discovered_replicas.remove(backup_replica_id)
+                if backup_replica_id in self.REPLICA_STUBS:
+                    del self.REPLICA_STUBS[backup_replica_id]
+
+        # Consider broadcast successful if:
+        # 1. We have no active replicas (single replica system)
+        # 2. We reached at least one replica successfully
+        if active_replicas == 0:
+            print("No active replicas to broadcast to")
+            return True
+        elif success_count > 0:
+            print(f"Broadcast successful to {success_count}/{active_replicas} replicas")
+            return True
+        else:
+            print(f"Broadcast failed to all {active_replicas} active replicas")
+            return False
+
     def RPCSyncData(self, request, context):
         """
         Handles incoming data synchronization requests from both leaders and followers.
@@ -459,7 +567,6 @@ class Server(app_pb2_grpc.AppServicer):
                 )
 
                 # Update in-memory data
-                self.user_login_database = received_user_db
                 self.active_users = received_active_users
                 # Then save to disk
                 self.save_data(received_user_db)
@@ -554,7 +661,6 @@ class Server(app_pb2_grpc.AppServicer):
                         self.active_users[username].append(msg)
 
         # Update our database with the merged result
-        self.user_login_database = merge_db
         self.save_data(merge_db)
 
     def sync_after_operation(self):
@@ -563,6 +669,7 @@ class Server(app_pb2_grpc.AppServicer):
         Determines whether to sync to leader or followers based on replica role.
         """
         # Always save locally first
+        print("REPLICA FILES", self.replica.messages_store, self.replica.users_store)
         self.save_data(self.user_login_database)
 
         if self.leader_id == self.replica.id:
@@ -1191,29 +1298,3 @@ class Server(app_pb2_grpc.AppServicer):
             return response
         except:
             return app_pb2.Response(operation=app_pb2.FAILURE, info="Logout Failed")
-
-    def RPCGetLeaderInfo(self, request, context):
-        return app_pb2.Response(operation=app_pb2.SUCCESS, info=f"{self.leader_id}")
-
-    def BroadcastUpdate(self, request, method):
-        print("inside broadcast")
-        if not self.REPLICA_STUBS:
-            self.REPLICA_STUBS = get_total_stubs()
-            print("in here?")
-        if not self.leader_id == self.replica.id:
-            return
-        success_count = 0
-        for backup_replica_id in self.replica_keys:
-            if backup_replica_id == self.replica.id:
-                continue
-            backup_stub = self.REPLICA_STUBS[backup_replica_id]
-            rpc_method = getattr(backup_stub, method, None)
-            if rpc_method:
-                res = rpc_method(request)
-                status = res.operation
-                if status == app_pb2.SUCCESS:
-                    success_count += 1
-        if success_count > 0:
-            print("broadcast success")
-            return True
-        return False
