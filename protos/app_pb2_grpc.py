@@ -99,6 +99,11 @@ class AppStub(object):
                 request_serializer=protos_dot_app__pb2.SyncDataRequest.SerializeToString,
                 response_deserializer=protos_dot_app__pb2.Response.FromString,
                 _registered_method=True)
+        self.RPCRequestLeaderData = channel.unary_unary(
+                '/App/RPCRequestLeaderData',
+                request_serializer=protos_dot_app__pb2.Request.SerializeToString,
+                response_deserializer=protos_dot_app__pb2.Response.FromString,
+                _registered_method=True)
 
 
 class AppServicer(object):
@@ -182,6 +187,12 @@ class AppServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RPCRequestLeaderData(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AppServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -248,6 +259,11 @@ def add_AppServicer_to_server(servicer, server):
             'RPCSyncData': grpc.unary_unary_rpc_method_handler(
                     servicer.RPCSyncData,
                     request_deserializer=protos_dot_app__pb2.SyncDataRequest.FromString,
+                    response_serializer=protos_dot_app__pb2.Response.SerializeToString,
+            ),
+            'RPCRequestLeaderData': grpc.unary_unary_rpc_method_handler(
+                    servicer.RPCRequestLeaderData,
+                    request_deserializer=protos_dot_app__pb2.Request.FromString,
                     response_serializer=protos_dot_app__pb2.Response.SerializeToString,
             ),
     }
@@ -601,6 +617,33 @@ class App(object):
             target,
             '/App/RPCSyncData',
             protos_dot_app__pb2.SyncDataRequest.SerializeToString,
+            protos_dot_app__pb2.Response.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RPCRequestLeaderData(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/App/RPCRequestLeaderData',
+            protos_dot_app__pb2.Request.SerializeToString,
             protos_dot_app__pb2.Response.FromString,
             options,
             channel_credentials,

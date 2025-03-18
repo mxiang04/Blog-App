@@ -50,4 +50,5 @@ service App {
     rpc RPCUpdateLeader (Request) returns (Response) {};
     rpc RPCGetLeaderInfo (Request) returns (Response) {};
     rpc RPCSyncData(SyncDataRequest) returns (Response);
+    rpc RPCRequestLeaderData (Request) returns (Response);
 }
