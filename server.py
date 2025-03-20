@@ -5,7 +5,7 @@ import csv
 import os
 import threading
 from protos import app_pb2_grpc, app_pb2
-from util import deserialize_data, hash_password, serialize_data
+from util import deserialize_data, get_normalized_msg_id, hash_password, serialize_data
 from consensus import REPLICAS, get_total_stubs
 import time
 import grpc
@@ -39,6 +39,12 @@ class Server(app_pb2_grpc.AppServicer):
         self.REPLICA_STUBS = {}  # Initialize as empty dict instead of None
         self.discovered_replicas = set([replica.id])  # Start with self-awareness
 
+        # Load data initially - but don't consider it authoritative yet
+        self.load_data()
+
+        print(f"Replica {self.replica.id} started. Initially loaded local data.")
+        print(f"Discovering other replicas and determining true leader...")
+
         # Start discovery and coordination threads
         threading.Thread(target=self.discover_replicas, daemon=True).start()
         time.sleep(1)  # Short delay to initialize
@@ -46,20 +52,75 @@ class Server(app_pb2_grpc.AppServicer):
         # Start heartbeat after discovery has a chance to run
         self.start_heartbeat()
 
-        # Load data initially - will be overwritten if not actually leader
-        self.load_data()
-
-        print(
-            f"Replica {self.replica.id} started. Currently believes it is the leader."
-        )
-        print(f"Discovering other replicas and determining true leader...")
-
     def discover_replicas(self):
         """Continuously tries to discover other replicas and determine the leader"""
         while True:
             self.update_active_replicas()
             self.determine_true_leader()
+
+            # After initial discovery and leader determination, check if we need to sync
+            if len(self.discovered_replicas) > 1:
+                if self.leader_id == self.replica.id:
+                    # If we're the leader, gather data from all replicas before establishing authority
+                    self.gather_and_merge_all_replica_data()
+                else:
+                    # If we're a follower, request data from leader
+                    self.request_data_from_leader()
+
+                # Only need to do this once after initial discovery
+                break
+
             time.sleep(5)  # Check for new replicas every 5 seconds
+
+        # Continue standard discovery process
+        while True:
+            self.update_active_replicas()
+            self.determine_true_leader()
+            time.sleep(5)
+
+    def gather_and_merge_all_replica_data(self):
+        """
+        If this replica is the leader, it should gather data from all other replicas
+        and merge it before establishing its data as authoritative.
+        This prevents a restarted leader from overwriting newer data.
+        """
+        print(
+            f"Leader {self.replica.id} gathering data from all replicas for initial merge"
+        )
+
+        for replica_id in list(self.discovered_replicas):
+            if replica_id == self.replica.id:
+                continue  # Skip self
+
+            try:
+                replica_info = REPLICAS.get(replica_id)
+                if not replica_info:
+                    continue
+
+                with grpc.insecure_channel(
+                    f"{replica_info.host}:{replica_info.port}"
+                ) as channel:
+                    stub = app_pb2_grpc.AppStub(channel)
+                    request = app_pb2.Request(info=["initial_sync"])
+                    response = stub.RPCRequestLeaderData(request)
+
+                    if response.operation == app_pb2.SUCCESS and response.info:
+                        print(
+                            f"Received data from replica {replica_id} for initial merge"
+                        )
+                        deserialized_data = deserialize_data(response.info[0])
+                        if deserialized_data and len(deserialized_data) == 2:
+                            replica_user_db, replica_active_users = deserialized_data
+                            # Merge data from this replica
+                            self.user_login_database = self.merge_data(
+                                replica_user_db, replica_active_users
+                            )
+            except Exception as e:
+                print(f"Failed to get data from replica {replica_id}: {e}")
+
+        # After gathering all data, sync back to all followers
+        self.sync_data_to_followers()
+        print(f"Leader {self.replica.id} completed initial data merge and sync")
 
     def update_active_replicas(self):
         """Try to connect to all configured replicas to see which ones are active"""
@@ -114,9 +175,10 @@ class Server(app_pb2_grpc.AppServicer):
             # If we just became the leader, sync data to followers
             if self.leader_id == self.replica.id and old_leader != self.replica.id:
                 print(
-                    f"This replica ({self.replica.id}) is now the leader. Syncing data to followers."
+                    f"This replica ({self.replica.id}) is now the leader. Gathering data before syncing."
                 )
-                self.sync_data_to_followers()
+                # First gather data from all replicas before taking leadership
+                self.gather_and_merge_all_replica_data()
             # If we just stopped being the leader, request latest data
             elif old_leader == self.replica.id and self.leader_id != self.replica.id:
                 print(
@@ -143,6 +205,7 @@ class Server(app_pb2_grpc.AppServicer):
                     deserialized_data = deserialize_data(response.info[0])
                     if deserialized_data and len(deserialized_data) == 2:
                         leader_user_db, leader_active_users = deserialized_data
+                        # Always merge with local data rather than overwriting
                         self.user_login_database = self.merge_data(
                             leader_user_db, leader_active_users
                         )
@@ -161,11 +224,9 @@ class Server(app_pb2_grpc.AppServicer):
         return False
 
     def RPCRequestLeaderData(self, request, context):
-        """Handle requests for initial data from followers"""
-        if self.leader_id != self.replica.id:
-            return app_pb2.Response(
-                operation=app_pb2.FAILURE, info="Not the leader, cannot provide data"
-            )
+        """Handle requests for initial data from followers or other replicas"""
+        # We should always provide our data, even if we're not the leader
+        # This allows for proper data gathering during initialization
 
         # Serialize current data state
         serialized_data = serialize_data(self.user_login_database, self.active_users)
@@ -232,13 +293,10 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"Error loading messages: {e}")
 
     def save_data(self, user_login_db):
-        """
-        Save all user and message data to CSV files
-        """
-        # save users
+        # Save users (unchanged)
         try:
             directory = os.path.dirname(self.replica.users_store)
-            if directory:  # Only attempt to create if there's a directory path
+            if directory:
                 os.makedirs(directory, exist_ok=True)
             with open(self.replica.users_store, "w", newline="") as file:
                 writer = csv.writer(file)
@@ -248,7 +306,7 @@ class Server(app_pb2_grpc.AppServicer):
         except Exception as e:
             print(f"Error saving users: {e}")
 
-        # save messages
+        # Modified message saving logic
         try:
             directory = os.path.dirname(self.replica.messages_store)
             if directory:
@@ -259,12 +317,18 @@ class Server(app_pb2_grpc.AppServicer):
                     ["sender", "receiver", "message", "timestamp", "is_read"]
                 )
 
-                # process all users
+                # Track processed messages to avoid duplicates
+                processed_messages = set()
+
+                # Process all users
                 for username, user in user_login_db.items():
-                    # save read messages
+                    # Save read messages
                     for msg in user.messages:
-                        # we only save messages where this user is the sender to avoid duplicates
-                        if msg.sender == username:
+                        # Generate a unique ID for this message
+                        msg_id = get_normalized_msg_id(msg)
+
+                        if msg_id not in processed_messages:
+                            processed_messages.add(msg_id)
                             writer.writerow(
                                 [
                                     msg.sender,
@@ -277,15 +341,19 @@ class Server(app_pb2_grpc.AppServicer):
 
                     # Save unread messages
                     for msg in user.unread_messages:
-                        writer.writerow(
-                            [
-                                msg.sender,
-                                msg.receiver,
-                                msg.message,
-                                msg.timestamp,
-                                "False",
-                            ]
-                        )
+                        msg_id = get_normalized_msg_id(msg)
+
+                        if msg_id not in processed_messages:
+                            processed_messages.add(msg_id)
+                            writer.writerow(
+                                [
+                                    msg.sender,
+                                    msg.receiver,
+                                    msg.message,
+                                    msg.timestamp,
+                                    "False",
+                                ]
+                            )
         except Exception as e:
             print(f"Error saving messages: {e}")
 
@@ -621,32 +689,6 @@ class Server(app_pb2_grpc.AppServicer):
             else:
                 # Existing user, merge messages
                 existing_user = merge_db[username]
-
-                # Create sets of message identifiers to avoid duplicates
-                existing_message_ids = {
-                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
-                    for msg in existing_user.messages
-                }
-                existing_unread_ids = {
-                    (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
-                    for msg in existing_user.unread_messages
-                }
-
-                # Add non-duplicate messages
-                for msg in incoming_user.messages:
-                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
-                    if msg_id not in existing_message_ids:
-                        existing_user.messages.append(msg)
-                        existing_message_ids.add(msg_id)
-
-                for msg in incoming_user.unread_messages:
-                    msg_id = (msg.sender, msg.receiver, msg.message, str(msg.timestamp))
-                    if (
-                        msg_id not in existing_unread_ids
-                        and msg_id not in existing_message_ids
-                    ):
-                        existing_user.unread_messages.append(msg)
-                        existing_unread_ids.add(msg_id)
 
         # merge active users
         for username, incoming_messages in incoming_active_users.items():
@@ -1136,6 +1178,7 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"OPERATION: READ MESSAGE")
             print(f"SERIALIZED DATA LENGTH: {response_size}")
             print("--------------------------------")
+            self.sync_after_operation()
             return response
 
         except:
