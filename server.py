@@ -292,9 +292,6 @@ class Server(app_pb2_grpc.AppServicer):
         """
         # check if the username and password are correct
         print("RPC Login")
-        if self.leader_id == self.replica.id:
-            print("Broadcasting")
-            self.BroadcastUpdate(request, "RPCLogin")
         if len(request.info) != 2:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Login Request Invalid"
@@ -323,6 +320,9 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"OPERATION: LOGIN")
             print(f"SERIALIZED DATA LENGTH: {response_size}")
             print("--------------------------------")
+            if self.leader_id == self.replica.id:
+                print("Broadcasting")
+                self.BroadcastUpdate(request, "RPCLogin")
             return response
 
         else:
@@ -742,27 +742,30 @@ class Server(app_pb2_grpc.AppServicer):
 
     def BroadcastUpdate(self, request, method):
         print("inside broadcast")
-        if not self.REPLICA_STUBS:
-            self.REPLICA_STUBS = get_total_stubs()
-            print("in here?")
         if not self.leader_id == self.replica.id:
             return
         success_count = 0
         for backup_replica_id in self.replica_keys:
+            if not self.REPLICA_STUBS:
+                self.REPLICA_STUBS = get_total_stubs()
+                print("in here?")
             if backup_replica_id == self.replica.id:
+                success_count += 1
                 continue
             backup_stub = self.REPLICA_STUBS[backup_replica_id]
             rpc_method = getattr(backup_stub, method, None)
+            print(f"RPC METHOD {rpc_method}")
             if rpc_method:
                 try:
+                    print(f"Broadcasting {request}")
                     res = rpc_method(request)
                     status = res.operation
                     if status == app_pb2.SUCCESS:
-                        success_count += 1
+                        success_count += 1                     
                 except grpc.RpcError as e:
                     self.replica_keys.remove(backup_replica_id)
                     print(f"{backup_replica_id} removed from list of replicas")
-        if success_count >= len(self.replica_keys) - 1:
+        if success_count > len(self.replica_keys) - 1:
             print("broadcast success")
             return True
         return False
