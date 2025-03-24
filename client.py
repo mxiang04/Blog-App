@@ -22,16 +22,16 @@ class Client:
 
     def __init__(self):
         self.stub = None
-        # username of the current client
+
         self.username = ""
-        # Last time we tried to connect to any replica
+        # last time we tried to connect to any replica
         self.last_connection_attempt = 0
-        # Connection cooldown to prevent constant retries
+        # connection cooldown to prevent constant retries
         self.connection_cooldown = 3  # seconds
-        # Track working replicas to prioritize them
+        # track working replicas to prioritize them
         self.working_replicas = set(REPLICAS.keys())
 
-        # Initial connection attempt
+        # initial connection attempt
         self.connect_to_any_replica()
 
     def connect_to_any_replica(self):
@@ -40,24 +40,22 @@ class Client:
         Try known working replicas first before trying others.
         """
         current_time = time.time()
-        # Enforce cooldown period between connection attempts
+
+        # we enforce a cooldown period 
         if current_time - self.last_connection_attempt < self.connection_cooldown:
             return False
 
         self.last_connection_attempt = current_time
-
-        # First try replicas we know are working
         for replica_id in list(self.working_replicas):
             if self.try_connect_to_replica(replica_id):
                 return True
 
-        # If that fails, try all replicas
         for replica_id in REPLICAS:
             if replica_id not in self.working_replicas:
                 if self.try_connect_to_replica(replica_id):
                     return True
 
-        logging.warning("Failed to connect to any replica")
+        print("Failed to connect to any replica")
         return False
 
     def try_connect_to_replica(self, replica_id):
