@@ -302,12 +302,17 @@ class Server(app_pb2_grpc.AppServicer):
 
         username, password = request.info
         print(username, password)
+
+        print(f"Failing here username should be in {self.user_login_database}, \n and not in {self.active_users}")
+        print(username in self.user_login_database)
+        print(self.user_login_database[username].password, password)
+        print(username not in self.active_users)
         if (
             username in self.user_login_database
             and self.user_login_database[username].password == password
             and username not in self.active_users
         ):
-
+            print("INSIDE HERE")
             unread_messages = len(self.user_login_database[username].unread_messages)
             self.active_users[username] = []
             response = app_pb2.Response(

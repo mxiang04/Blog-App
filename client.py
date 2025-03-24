@@ -161,8 +161,8 @@ class Client:
 
         try:
             # hash password
-            password = hash_password(password)
-            request = app_pb2.Request(info=[username, password])
+            password_hash = hash_password(password)
+            request = app_pb2.Request(info=[username, password_hash])
             request_size = request.ByteSize()
             print("--------------------------------")
             print(f"OPERATION: LOGIN")
@@ -172,6 +172,8 @@ class Client:
             # Use a timeout to avoid hanging
             res = self.stub.RPCLogin(request, timeout=5)
             status = res.operation
+
+            print(f"STATUS {status}")
 
             if status == app_pb2.SUCCESS:
                 self.username = username
@@ -183,7 +185,9 @@ class Client:
         except grpc.RpcError as e:
             if self.handle_rpc_error(e, "LOGIN"):
                 # Try once more if reconnection was successful
-                return self.login(username, password)
+                ret = self.login(username, password)
+                print(ret)
+                return ret
             return False, 0
 
     def logout(self):
