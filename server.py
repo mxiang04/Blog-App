@@ -329,13 +329,6 @@ class Server(app_pb2_grpc.AppServicer):
             dict: A dictionary representing the data object
         """
         print(f"RPC Create Account {self.replica.id}")
-        if self.leader_id == self.replica.id:
-            print("RPC LEADER")
-            ret = self.BroadcastUpdate(request, "RPCCreateAccount")
-            if not ret:
-                return app_pb2.Response(
-                    operation=app_pb2.FAILURE, info="Broadcast Not Successful"
-                )
         if len(request.info) != 2:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Create Account Request Invalid"
@@ -363,6 +356,13 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"OPERATION: CREATE ACCOUNT")
             print(f"SERIALIZED DATA LENGTH: {response_size}")
             print("--------------------------------")
+            if self.leader_id == self.replica.id:
+                print("RPC LEADER")
+                ret = self.BroadcastUpdate(request, "RPCCreateAccount")
+                if not ret:
+                    return app_pb2.Response(
+                        operation=app_pb2.FAILURE, info="Broadcast Not Successful"
+                    )
             return response
 
     def RPCListAccount(self, request, context):
@@ -374,8 +374,6 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
-        if self.leader_id == self.replica.id:
-            self.BroadcastUpdate(request, "RPCListAccount")
         try:
             if len(request.info) != 1:
                 return app_pb2.Response(
@@ -393,6 +391,8 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"OPERATION: LIST ACCOUNTS")
             print(f"SERIALIZED DATA LENGTH: {response_size}")
             print("--------------------------------")
+            if self.leader_id == self.replica.id:
+                self.BroadcastUpdate(request, "RPCListAccount")
             return response
 
         except:
@@ -412,8 +412,6 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
-        if self.leader_id == self.replica.id:
-            self.BroadcastUpdate(request, "RPCSendMessage")
         if len(request.info) != 3:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Send Message Request Invalid"
@@ -464,14 +462,14 @@ class Server(app_pb2_grpc.AppServicer):
         print(f"OPERATION: SEND MESSAGE")
         print(f"SERIALIZED DATA LENGTH: {response_size}")
         print("--------------------------------")
+        if self.leader_id == self.replica.id:
+            self.BroadcastUpdate(request, "RPCSendMessage")
         return response
 
     def RPCGetInstantMessages(self, request, context):
         """
         Gets the instant messages of the user.
         """
-        if self.leader_id == self.replica.id:
-            self.BroadcastUpdate(request, "RPCGetInstantMessages")
         if len(request.info) != 1:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Get Instant Messages Request Invalid"
@@ -499,6 +497,8 @@ class Server(app_pb2_grpc.AppServicer):
         response = app_pb2.Response(
             operation=app_pb2.SUCCESS, info="", messages=incoming_messages
         )
+        if self.leader_id == self.replica.id:
+            self.BroadcastUpdate(request, "RPCGetInstantMessages")
         return response
 
     def RPCReadMessage(self, request, context):
@@ -510,8 +510,6 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
-        if self.leader_id == self.replica.id:
-            self.BroadcastUpdate(request, "RPCReadMessage")
         if len(request.info) != 1:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Read Message Request Invalid"
@@ -553,6 +551,8 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"OPERATION: READ MESSAGE")
             print(f"SERIALIZED DATA LENGTH: {response_size}")
             print("--------------------------------")
+            if self.leader_id == self.replica.id:
+                self.BroadcastUpdate(request, "RPCReadMessage")
             return response
 
         except:
@@ -614,8 +614,6 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
-        if self.leader_id == self.replica.id:
-            self.BroadcastUpdate(request, "RPCDeleteMessage")
         if len(request.info) != 4:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Delete Message Request Invalid"
@@ -645,6 +643,8 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"OPERATION: DELETE MESSAGE")
             print(f"SERIALIZED DATA LENGTH: {response_size}")
             print("--------------------------------")
+            if self.leader_id == self.replica.id:
+                self.BroadcastUpdate(request, "RPCDeleteMessage")
             return response
 
         except:
@@ -662,8 +662,6 @@ class Server(app_pb2_grpc.AppServicer):
         Returns:
             dict: A dictionary representing the data object
         """
-        if self.leader_id == self.replica.id:
-            self.BroadcastUpdate(request, "RPCDeleteAccount")
         if len(request.info) != 1:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Delete Account Request Invalid"
@@ -690,6 +688,8 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"OPERATION: DELETE ACCOUNT")
             print(f"SERIALIZED DATA LENGTH: {response_size}")
             print("--------------------------------")
+            if self.leader_id == self.replica.id:
+                self.BroadcastUpdate(request, "RPCDeleteAccount")
             return response
 
         except:
@@ -701,8 +701,6 @@ class Server(app_pb2_grpc.AppServicer):
         """
         Logs out the user.
         """
-        if self.leader_id == self.replica.id:
-            self.BroadcastUpdate(request, "RPCLogout")
         if len(request.info) != 1:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Logout Request Invalid"
@@ -717,6 +715,8 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"OPERATION: LOGOUT")
             print(f"SERIALIZED DATA LENGTH: {response_size}")
             print("--------------------------------")
+            if self.leader_id == self.replica.id:
+                self.BroadcastUpdate(request, "RPCLogout")
             return response
         except:
             return app_pb2.Response(operation=app_pb2.FAILURE, info="Logout Failed")
