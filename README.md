@@ -85,6 +85,32 @@ This contains the list of packages we need for the app.
 
 This contains the structures and functions needed for our gRPC architecture. We use this file to autogenerate python files for server/client communication.
 
+#### Consensus Protocol 
+For this project, we implement two-fault tolerance and replication via the below consensus protocol: 
+
+##### Leader Election
+- we elect leaders in our protocol by taking the lowest port number in the set of servers/replicas that are currently running. We specify three port numbers associated with this application: 5001, 5002, 5003. Therefore, when the application first spins up, the lead replica is hosted on port 5001. 
+##### Broadcasted Updates
+- when an action is taken by the lead server, following a client request, the lead server broadcasts to all other follower servers/replicas the new changes.
+- Specifically, each server class has a list of replica stubs which are the client stubs to all other replicas that the server may need to interact with. When there is an update to be broadcasted, the lead replica/server iterates through all replica client stubs and sends the specified RPC request to it. At the end of the loop, the lead replica/server makes sure that all follower replicas/servers have received the RPC request. 
+Heartbeat Updates - each follower replica sends dummy heartbeat requests to the lead server/replica to ensure that the lead server is running smoothly and that there have been no failures. When a failure does occur though, leader election is initiated.
+- In a separate thread, each follower replica enters an infinite loop that sends a series of dummy RPC Heartbeat requests to the lead server’s address. This is feasible because each replica/server keeps a copy of the lead replica’s address
+- When the leader fails, the replica that detects the failure immediately issues Leader Election, which iterates through all active leader replica IDs and finds the replica with the lowest port #. We mitigate against race conditions by using a locking system that is shared across 
+##### Client Leader Updates
+- each client ingests a stub that is associated with the correct leader replica’s host and port. This means that when a leader election occurs, the client stub needs to rectify towards connecting to the right leader
+- we do this in each method such that when the client calls a method such as Login, Logout, etc. and a gRPC error occurs, we iterate through all possible replicas from lowest port ID to highest port ID until we find a replica that we can connect to. We create a stub accordingly and have the client use that stub for client-server interactions from then on 
+
+#### Persistent Storage 
+The above details the high-level implementation thought process for our replication process and consensus protocol. Below, we detail the persistence implementation and design: 
+
+##### Message and User Store
+- in our replica configuration file, we modified each replica to have a string denoting the file that it will store its messages and the file it will store its users. Currently, we have data stored in the form of a csv file.
+##### Loading the data
+- on initial startup of the server, the server calls a loading data function that checks if the replica file path for the messages and users exists on the system. If it does not exist, then the server will assume that no data has been inputted yet on the system. If it does exist, however, then the function reads through all the rows of the csv file and proceeds to fill in the local dictionary of users and messages with the respective contents of the csv file.
+##### Saving the data
+- every time a function that modifies data is called, such as creating an account, sending a message, etc., we call a function that saves the data in the case that our modification is successful. The saving data function combs through the local dictionary for users and messages and proceeds to save them as rows in the csv files we specified in the configuration file for the replicas.
+
+
 #### Protocol
 
 Protocol
