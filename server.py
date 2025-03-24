@@ -4,16 +4,6 @@ from datetime import datetime
 import csv
 import os
 import threading
-<<<<<<< HEAD
-=======
-from protos import app_pb2_grpc, app_pb2
-from util import hash_password
-from consensus import REPLICAS, get_total_stubs
-import time
-import grpc
-from filelock import FileLock
-
->>>>>>> 13487c5 (cherry picking commit)
 from protos import app_pb2_grpc, app_pb2
 from util import hash_password
 from consensus import REPLICAS, get_total_stubs
@@ -157,7 +147,7 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"Error saving messages: {e}")
 
     def elect_leader(self):
-        print("inside electing leader?2")
+        print(f"inside electing leader? with {self.leader_id} and {self.replica_keys}")
         if self.leader_id in self.replica_keys:
             print("inside electing leader?3")
             old_id = self.leader_id
@@ -197,6 +187,7 @@ class Server(app_pb2_grpc.AppServicer):
             info=[self.leader_id, self.leader_host, str(self.leader_port)]
         )
         for replica_id in self.replica_keys:
+            print(f"Notifying these replicas {replica_id}")
             if replica_id == self.replica.id:
                 continue
             try:
@@ -225,7 +216,7 @@ class Server(app_pb2_grpc.AppServicer):
                             f"Triggered by {self.replica.id} with leader {self.leader_host}:{self.leader_port}"
                         )
                         self.elect_leader()
-                        print("Electing new leader")
+                        print("Elected new leader")
             time.sleep(self.HEART_BEAT_FREQUENCY)
 
     def RPCHeartbeat(self, request, context):
@@ -244,7 +235,7 @@ class Server(app_pb2_grpc.AppServicer):
         )
         print(f"new leader lection {leader_id}")
 
-        if self.leader_id in self.replica_keys:
+        if leader_id != self.leader_id:
             self.replica_keys.remove(self.leader_id)
 
             self.leader_id = leader_id
@@ -739,7 +730,7 @@ class Server(app_pb2_grpc.AppServicer):
                 status = res.operation
                 if status == app_pb2.SUCCESS:
                     success_count += 1
-        if success_count > 0:
+        if success_count >= len(self.replica_keys) - 1:
             print("broadcast success")
             return True
         return False
