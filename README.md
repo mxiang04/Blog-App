@@ -1,6 +1,6 @@
 # CS 2620 - Chat App
 
-This repository contains the code for Design Exercise 2: gRPC for Chat App Harvard's CS 2620: Distributed Programming class. The chat app can be loaded with a GUI. You can access the design document and engineering notebook [here](https://docs.google.com/document/d/1vJeS7PuXCz1lkp-FrzXvrbb7IFf1vcbZgZWthI5IdKU/edit?usp=sharing). The application supports the following features:
+This repository contains the code for Design Exercise 3: Replication in a Chat App Harvard's CS 2620: Distributed Programming class. This builds upon the previous design exercises by adding 2-fault tolerance and persistence. The chat app can be loaded with a GUI. You can access the design document and engineering notebook [here](https://docs.google.com/document/d/1vJeS7PuXCz1lkp-FrzXvrbb7IFf1vcbZgZWthI5IdKU/edit?usp=sharing). The application supports the following features:
 
 ### Features
 
@@ -11,13 +11,14 @@ This repository contains the code for Design Exercise 2: gRPC for Chat App Harva
 - Reading messages. The user will be able to view how many messages they have currently, and they can enter how many messages they wish to view (starting from messages sent more recently).
 - Deleting messages. We allow a user to delete messages, which will delete the messages permanently between sender and recipient. The recipient will also have the message deleted from their account.
 - Deleting an account. We allow the user to confirm deletion of their account. Deleting account keeps all messages already sent in the database. If the user is logged in on two different devices, deletion of the account prevents the user on the other device from making any changes.
+- Our app is 2-fault tolerant and persistent. It can handle 2 servers failing and still working, and after the servers shut down, it is able to handle the servers launching back up with the same data.
 
 ### Setup
 
 To setup, we first require people to clone our repository via
 
 ```
-git clone https://github.com/nchen55555/CS262-Design1.git
+git clone https://github.com/nchen55555/Persistent-Chat.git
 ```
 
 After, we require the user to have Python3 and pip installed on their system. To install the necessary packages, run
@@ -48,11 +49,11 @@ This contains the code for the client/user side of the app.
 
 ##### server.py
 
-This contains the server code, which handles multiple client connections.
+This contains the server code, which handles multiple client connections. This also accounts for multiple replicas, which we need to ensure our app is 2-fault tolerant.
 
-##### operations.py
+##### consensus.py
 
-This maps the operations we support (read/send message, etc.) to specific numbers that we can later reference in our wire protocol as well as the versions of the wire protocol via enums.
+This creates the replica class and loads them up from a json file configuring our servers. Each replica is created with a different post and hort configuration, and they are used in our other files to make sure our servers can communicate with each other.
 
 ##### message.py
 
@@ -62,15 +63,15 @@ This contains the class for the messages, which is structured so that every mess
 
 This contains the class for the users, structured around the username and hashed password, and also including the user's messages and unread messages.
 
-##### test.py
+##### test\_{x}.py
 
 This contains unit tests that we use to test the effectiveness of our app. Simply run these unit tests via
 
 ```
-python test.py
+python test_{x}.py
 ```
 
-Note: `test.py` spins up its own server, so you will need to delete any existing servers running on the same port before you run the test.
+where x represents what you want to test (functions, fault tolerance, or persistence).
 
 ##### util.py
 
