@@ -163,9 +163,7 @@ class Server(app_pb2_grpc.AppServicer):
             print(f"Error saving messages: {e}")
 
     def elect_leader(self):
-        print(f"inside electing leader? with {self.leader_id} and {self.replica_keys}")
         if self.leader_id in self.replica_keys:
-            print("inside electing leader?3")
             old_id = self.leader_id
             self.replica_keys.remove(old_id)
 
@@ -184,7 +182,6 @@ class Server(app_pb2_grpc.AppServicer):
         request = app_pb2.HeartbeatRequest()
         while True:
             success = 0
-            print("redoing")
             for replica_id in self.replica_keys:
                 if replica_id == self.replica.id:
                     sucess += 1
@@ -198,7 +195,6 @@ class Server(app_pb2_grpc.AppServicer):
         # return success == len(REPLICAS)
 
     def notify_replicas_new_leader(self):
-        print(f"notify replicas {self.leader_id} from {self.replica.id}")
         request = app_pb2.Request(
             info=[self.leader_id, self.leader_host, str(self.leader_port)]
         )
@@ -232,7 +228,7 @@ class Server(app_pb2_grpc.AppServicer):
                     # print(f"Before replica id {self.replica.id}")
                     if self.replica.id == max(self.replica_keys):
                         print(f"Highest replica id {self.replica.id}")
-                        # we implement a bully algorithm such that only the highest replica id gets to elect the leader 
+                        # we implement a bully algorithm such that only the highest replica id gets to elect the leader
                         # with self.election_lock:
                         print(f"Heartbeat failed: {e}")
                         print(
@@ -257,7 +253,7 @@ class Server(app_pb2_grpc.AppServicer):
             request.info[2],
         )
         print(f"new leader lection {leader_id}")
-        
+
         if leader_id != self.leader_id:
             self.replica_keys.remove(self.leader_id)
 
@@ -298,18 +294,11 @@ class Server(app_pb2_grpc.AppServicer):
             )
 
         username, password = request.info
-        print(username, password)
-
-        print(f"Failing here username should be in {self.user_login_database}, \n and not in {self.active_users}")
-        print(username in self.user_login_database)
-        print(self.user_login_database[username].password, password)
-        print(username not in self.active_users)
         if (
             username in self.user_login_database
             and self.user_login_database[username].password == password
             and username not in self.active_users
         ):
-            print("INSIDE HERE")
             unread_messages = len(self.user_login_database[username].unread_messages)
             self.active_users[username] = []
             response = app_pb2.Response(
@@ -344,18 +333,14 @@ class Server(app_pb2_grpc.AppServicer):
             print("RPC LEADER")
             ret = self.BroadcastUpdate(request, "RPCCreateAccount")
             if not ret:
-                print("here -1")
                 return app_pb2.Response(
                     operation=app_pb2.FAILURE, info="Broadcast Not Successful"
                 )
-        print("here 0")
         if len(request.info) != 2:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Create Account Request Invalid"
             )
-        print("here 1")
         username, password = request.info
-        print(username, password)
         # check if the username is taken
         if username in self.user_login_database:
             return app_pb2.Response(
@@ -370,7 +355,6 @@ class Server(app_pb2_grpc.AppServicer):
         else:
             self.user_login_database[username] = User(username, password)
             # Save changes to CSV
-            print(self.replica, "HELLO", "SAVING DATA")
             self.save_data()
 
             response = app_pb2.Response(operation=app_pb2.SUCCESS, info="")
@@ -741,14 +725,12 @@ class Server(app_pb2_grpc.AppServicer):
         return app_pb2.Response(operation=app_pb2.SUCCESS, info=f"{self.leader_id}")
 
     def BroadcastUpdate(self, request, method):
-        print("inside broadcast")
         if not self.leader_id == self.replica.id:
             return
         success_count = 0
         for backup_replica_id in self.replica_keys:
             if not self.REPLICA_STUBS:
                 self.REPLICA_STUBS = get_total_stubs()
-                print("in here?")
             if backup_replica_id == self.replica.id:
                 success_count += 1
                 continue
@@ -761,7 +743,7 @@ class Server(app_pb2_grpc.AppServicer):
                     res = rpc_method(request)
                     status = res.operation
                     if status == app_pb2.SUCCESS:
-                        success_count += 1                     
+                        success_count += 1
                 except grpc.RpcError as e:
                     self.replica_keys.remove(backup_replica_id)
                     print(f"{backup_replica_id} removed from list of replicas")

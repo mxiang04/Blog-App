@@ -41,7 +41,7 @@ class Client:
         """
         current_time = time.time()
 
-        # we enforce a cooldown period 
+        # we enforce a cooldown period
         if current_time - self.last_connection_attempt < self.connection_cooldown:
             return False
 
@@ -71,27 +71,25 @@ class Client:
                 f"Attempting to connect to replica {replica_id} at {host}:{port}"
             )
             channel = grpc.insecure_channel(f"{host}:{port}")
-            # Set a short deadline for the connection attempt
             channel_ready = grpc.channel_ready_future(channel)
             channel_ready.result(timeout=2)  # 2 second timeout
 
-            # Create stub and test with a simple call
             stub = app_pb2_grpc.AppStub(channel)
 
-            # Try to get the leader info
+            # try to get the leader
             res = stub.RPCGetLeaderInfo(app_pb2.Request(), timeout=2)
 
             if res.operation == app_pb2.SUCCESS:
                 leader_id = "".join(res.info)
 
-                # If this replica is the leader, use it directly
+                # use if replica is leader
                 if leader_id == replica_id:
                     self.stub = stub
                     logging.info(f"Connected to leader replica {replica_id}")
                     self.working_replicas.add(replica_id)
                     return True
 
-                # Otherwise, try to connect to the leader
+                # else, we try to get the leader and connect
                 leader = REPLICAS.get(leader_id)
                 if leader:
                     leader_host, leader_port = leader.host, leader.port
@@ -115,7 +113,7 @@ class Client:
                         return True
                     except Exception as e:
                         logging.warning(f"Failed to connect to leader {leader_id}: {e}")
-                        # If leader connection fails, use the working replica instead
+                        # use working replica if leader connection fails
                         self.stub = stub
                         self.working_replicas.add(replica_id)
                         logging.info(f"Using replica {replica_id} as fallback")
