@@ -207,7 +207,10 @@ class Server(app_pb2_grpc.AppServicer):
             if replica_id == self.replica.id:
                 continue
             try:
-                res = self.replica_stub.RPCUpdateLeader(request)
+                # TEST
+                if not self.REPLICA_STUBS:
+                    self.REPLICA_STUBS = get_total_stubs()
+                res = self.REPLICA_STUBS[replica_id].RPCUpdateLeader(request)
                 print(f"Notified {replica_id} of new leader {self.leader_id}")
             except grpc.RpcError as e:
                 print(f"Failed to notify {replica_id}: {e}")
@@ -226,7 +229,11 @@ class Server(app_pb2_grpc.AppServicer):
                         stub = app_pb2_grpc.AppStub(channel)
                         response = stub.RPCHeartbeat(app_pb2.Request())
                 except grpc.RpcError as e:
-                    with self.election_lock:
+                    # print(f"Before replica id {self.replica.id}")
+                    if self.replica.id == max(self.replica_keys):
+                        print(f"Highest replica id {self.replica.id}")
+                        # we implement a bully algorithm such that only the highest replica id gets to elect the leader 
+                        # with self.election_lock:
                         print(f"Heartbeat failed: {e}")
                         print(
                             f"Triggered by {self.replica.id} with leader {self.leader_host}:{self.leader_port}"
@@ -239,7 +246,7 @@ class Server(app_pb2_grpc.AppServicer):
         return app_pb2.Response(operation=app_pb2.SUCCESS)
 
     def RPCUpdateLeader(self, request, context):
-        print(f"updating leader {request.info}")
+        print(f"updating leader {request.info} on {self.replica.id}")
         if len(request.info) != 3:
             return app_pb2.Response(
                 operation=app_pb2.FAILURE, info="Update Leader Request Failed"
@@ -250,7 +257,7 @@ class Server(app_pb2_grpc.AppServicer):
             request.info[2],
         )
         print(f"new leader lection {leader_id}")
-
+        
         if leader_id != self.leader_id:
             self.replica_keys.remove(self.leader_id)
 
