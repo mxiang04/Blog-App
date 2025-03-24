@@ -116,33 +116,49 @@ class Server(app_pb2_grpc.AppServicer):
                     ["sender", "receiver", "message", "timestamp", "is_read"]
                 )
 
+                # Create a set to track which messages have been saved
+                saved_messages = set()
+
                 # process all users
                 for username, user in self.user_login_database.items():
-                    # save read messages
+                    # save read messages where this user is the sender
                     for msg in user.messages:
-                        # we only save messages where this user is the sender to avoid duplicates
                         if msg.sender == username:
+                            # Create a unique identifier for the message
+                            msg_id = f"{msg.sender}|{msg.receiver}|{msg.message}|{msg.timestamp}"
+
+                            # Only save if we haven't seen this message before
+                            if msg_id not in saved_messages:
+                                writer.writerow(
+                                    [
+                                        msg.sender,
+                                        msg.receiver,
+                                        msg.message,
+                                        msg.timestamp,
+                                        "True",
+                                    ]
+                                )
+                                saved_messages.add(msg_id)
+
+                    # Save unread messages where this user is the receiver
+                    for msg in user.unread_messages:
+                        # Create a unique identifier for the message
+                        msg_id = (
+                            f"{msg.sender}|{msg.receiver}|{msg.message}|{msg.timestamp}"
+                        )
+
+                        # Only save if we haven't seen this message before
+                        if msg_id not in saved_messages:
                             writer.writerow(
                                 [
                                     msg.sender,
                                     msg.receiver,
                                     msg.message,
                                     msg.timestamp,
-                                    "True",
+                                    "False",
                                 ]
                             )
-
-                    # Save unread messages
-                    for msg in user.unread_messages:
-                        writer.writerow(
-                            [
-                                msg.sender,
-                                msg.receiver,
-                                msg.message,
-                                msg.timestamp,
-                                "False",
-                            ]
-                        )
+                            saved_messages.add(msg_id)
         except Exception as e:
             print(f"Error saving messages: {e}")
 
@@ -726,10 +742,14 @@ class Server(app_pb2_grpc.AppServicer):
             backup_stub = self.REPLICA_STUBS[backup_replica_id]
             rpc_method = getattr(backup_stub, method, None)
             if rpc_method:
-                res = rpc_method(request)
-                status = res.operation
-                if status == app_pb2.SUCCESS:
-                    success_count += 1
+                try:
+                    res = rpc_method(request)
+                    status = res.operation
+                    if status == app_pb2.SUCCESS:
+                        success_count += 1
+                except grpc.RpcError as e:
+                    self.replica_keys.remove(backup_replica_id)
+                    print(f"{backup_replica_id} removed from list of replicas")
         if success_count >= len(self.replica_keys) - 1:
             print("broadcast success")
             return True
