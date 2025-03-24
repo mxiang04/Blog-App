@@ -1,0 +1,20 @@
+sender,receiver,message,timestamp,is_read
+nicole,michael,msg,2025-03-23 23:24:22.083466,True
+nicole,michael,msg2,2025-03-23 23:24:37.536228,True
+nicole,michael,msg3,2025-03-23 23:25:13.753137,True
+nicole,michael,msg5,2025-03-23 23:25:40.932173,True
+nicole,michael,instan?,2025-03-23 23:26:04.519728,True
+nicole,michael,msg9,2025-03-23 23:26:18.825384,True
+nicole,michael,wefwe,2025-03-23 23:30:05.203274,True
+nicole,michael,wefwe,2025-03-23 23:30:05.203274,True
+nicole,michael,instant,2025-03-23 23:44:25.282560,True
+nicole,michael,instan?,2025-03-23 23:44:35.557246,True
+nicole,michael,instan,2025-03-23 23:45:21.474896,True
+nicole,michael,wefwe,2025-03-23 23:30:05.203274,True
+nicole,michael,test,2025-03-23 23:47:34.264411,True
+nicole,michael,wefwe,2025-03-23 23:30:05.203274,True
+nicole,michael,msg,2025-03-23 23:53:52.883980,True
+nicole,michael,msg2,2025-03-23 23:54:06.191949,True
+michael,nicole,msg1,2025-03-23 23:24:58.285480,True
+michael,nicole,msg4,2025-03-23 23:25:26.970474,True
+nicole,michael,wefwe,2025-03-23 23:30:05.203274,False

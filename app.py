@@ -145,8 +145,8 @@ class ChatAppGUI:
                     self.root.after(0, self.show_notification)
                 time.sleep(0.1)  # short sleep to prevent CPU spinning
             except Exception as e:
-                logging.error(f"Error in background poll: {e}")
-                break
+                print("ERRRORRRRR WITH INSTANT OUTSIDE")
+                time.sleep(0.5)
 
     def cleanup(self):
         """Clean up resources before closing"""

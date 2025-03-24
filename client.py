@@ -397,6 +397,8 @@ class Client:
                 return []
         except grpc.RpcError as e:
             # For instant messages, don't retry to avoid blocking the UI
+            print("ERRRORRRRR WITH INSTANT")
+            self.connect_to_any_replica()
             logging.debug(f"Error getting instant messages: {e}")
             return []
 
