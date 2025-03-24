@@ -928,6 +928,26 @@ class ChatAppGUI:
         except Exception as e:
             messagebox.showerror("Server Error", str(e))
 
+    def start_server(self):
+        """Starts the server in a separate thread."""
+        self.clear_frame()
+        tk.Label(self.main_frame, text="Server Started", font=("Arial", 14)).pack(
+            pady=10
+        )
+        replicas = get_total_replicas() 
+        processes = []
+        for replica_id in replicas: 
+            p = multiprocessing.Processing(
+                target=self.run_server, args=(replicas[replica_id]), 
+            )
+            p.start()
+            processes.append(p)
+        # threading.Thread(target=self.run_server, daemon=True).start()
+
+        # Wait for all processes to finish (they won't in this example)
+        for p in processes:
+            p.join()
+
     def on_exit(self):
         self.cleanup()
         self.root.destroy()
