@@ -9,14 +9,14 @@
     },
     {
       "id": "replica2",
-      "host": "10.250.193.82",
+      "host": "10.250.243.174",
       "port": 5002,
       "messages_store": "replica2_messages.csv",
       "users_store": "replica2_users.csv"
     },
     {
       "id": "replica3",
-      "host": "10.250.193.82",
+      "host": "10.250.243.174",
       "port": 5003,
       "messages_store": "replica3_messages.csv",
       "users_store": "replica3_users.csv"
