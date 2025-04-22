@@ -1,23 +1,22 @@
 syntax = "proto3";
 
-enum Operation {
-    SUCCESS = 0;
-    FAILURE = 1;
-    DELIVER_MESSAGE_NOW = 2;
-    LOGIN = 3;
-    CREATE_ACCOUNT = 4;
-    DELETE_ACCOUNT = 5;
-    LIST_ACCOUNTS = 6;
-    SEND_MESSAGE = 7;
-    READ_MESSAGE = 8;
-    DELETE_MESSAGE = 9;
+package blog;
+
+message Post {
+  string post_id = 1;
+  string author = 2;
+  string title = 3;
+  string content = 4;
+  string timestamp = 5;
+  repeated string likes = 6;
 }
 
-message Message {
-    string sender = 1;
-    string receiver = 2;
-    string timestamp = 3;
-    string message = 4;
+message Notification {
+  string type = 1;
+  string from = 2;
+  string post_id = 3;
+  string title = 4;
+  string timestamp = 5;
 }
 
 message Request {
@@ -25,30 +24,40 @@ message Request {
 }
 
 message Response {
-    Operation operation = 1;
-    repeated string info = 2;
-    repeated Message messages = 3;
+  // For blog operations
+  int32 operation = 1;      // SUCCESS = 0, FAILURE = 1
+  repeated string info = 2; // any extra string data
+  repeated Post posts = 3;  // For post listing operations
+  repeated Notification notifications = 4;
 }
 
-message SyncDataRequest {
-  string source_id = 1;
-  string data = 2;
-  bool is_leader = 3;
-}
-
-service App {
-    rpc RPCLogin(Request) returns (Response) {}
-    rpc RPCCreateAccount(Request) returns (Response) {}
-    rpc RPCListAccount(Request) returns (Response) {}
-    rpc RPCSendMessage(Request) returns (Response) {}
-    rpc RPCReadMessage(Request) returns (Response) {}
-    rpc RPCDeleteMessage(Request) returns (Response) {}
-    rpc RPCDeleteAccount(Request) returns (Response) {}
-    rpc RPCGetInstantMessages(Request) returns (Response) {}
-    rpc RPCLogout(Request) returns (Response) {}
-    rpc RPCHeartbeat (Request) returns (Response) {}
-    rpc RPCUpdateLeader (Request) returns (Response) {};
-    rpc RPCGetLeaderInfo (Request) returns (Response) {};
-    rpc RPCSyncData(SyncDataRequest) returns (Response);
-    rpc RPCRequestLeaderData (Request) returns (Response);
+service Blog {
+  rpc RPCLogin (Request) returns (Response);
+  rpc RPCLogout (Request) returns (Response);
+  rpc RPCCreateAccount (Request) returns (Response);
+  rpc RPCDeleteAccount (Request) returns (Response);
+  
+  // Post operations
+  rpc RPCCreatePost (Request) returns (Response);
+  rpc RPCGetPost (Request) returns (Response);
+  rpc RPCGetUserPosts (Request) returns (Response);
+  rpc RPCGetPostById (Request) returns (Response);
+  rpc RPCLikePost (Request) returns (Response);
+  rpc RPCUnlikePost (Request) returns (Response);
+  rpc RPCDeletePost (Request) returns (Response);
+  
+  // Subscription operations
+  rpc RPCSubscribe (Request) returns (Response);
+  rpc RPCUnsubscribe (Request) returns (Response);
+  rpc RPCGetSubscriptions (Request) returns (Response);
+  rpc RPCGetSubscribers (Request) returns (Response);
+  rpc RPCGetUserFollowers (Request) returns (Response);
+  
+  // Notification operations
+  rpc RPCGetNotifications (Request) returns (Response);
+  rpc RPCMarkNotificationsAsRead (Request) returns (Response);
+  
+  // User operations
+  rpc RPCSearchUsers (Request) returns (Response);
+  rpc RPCGetUserProfile (Request) returns (Response);
 }
