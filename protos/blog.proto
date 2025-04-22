@@ -65,4 +65,6 @@ service Blog {
   // User operations
   rpc RPCSearchUsers (Request) returns (Response);
   rpc RPCGetUserProfile (Request) returns (Response);
+
+  rpc RPCGetLeaderInfo (Request) returns (Response);
 }
