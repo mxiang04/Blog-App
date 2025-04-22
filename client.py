@@ -1,6 +1,6 @@
 import socket
 import os
-from protos import app_pb2, app_pb2_grpc
+from protos import blog_pb2, blog_pb2_grpc
 from util import hash_password
 import threading
 import logging
@@ -10,7 +10,18 @@ from consensus import REPLICAS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+SUCCESS = 0
+FAILURE = 1
 
+class PostData:
+    def __init__(self, post_id, author, title, content, timestamp, likes, comments):
+        self.post_id = post_id
+        self.author = author
+        self.title = title
+        self.content = content
+        self.timestamp = timestamp
+        self.likes = likes
+        self.comments = comments
 
 class Client:
     # global variables consistent across all instances of the Client class
@@ -29,7 +40,7 @@ class Client:
         # connection cooldown to prevent constant retries
         self.connection_cooldown = 3  # seconds
         # track working replicas to prioritize them
-        self.working_replicas = set(REPLICAS.keys())
+        self.working_replicas = set(replica["id"] for replica in REPLICAS)
 
         # initial connection attempt
         self.connect_to_any_replica()
@@ -51,7 +62,7 @@ class Client:
                 return True
 
         for replica_id in REPLICAS:
-            if replica_id not in self.working_replicas:
+            if replica_id not in list(self.working_replicas):
                 if self.try_connect_to_replica(replica_id):
                     return True
 
@@ -60,11 +71,12 @@ class Client:
 
     def try_connect_to_replica(self, replica_id):
         """Try to connect to a specific replica directly"""
-        if replica_id not in REPLICAS:
+        replicas = [replica for replica in REPLICAS if replica["id"] == replica_id]
+        if len(replicas) == 0:
             return False
-
-        replica = REPLICAS[replica_id]
-        host, port = replica.host, replica.port
+        
+        replica = replicas[0]
+        host, port = replica["host"], replica["port"]
 
         try:
             logging.info(
@@ -74,12 +86,12 @@ class Client:
             channel_ready = grpc.channel_ready_future(channel)
             channel_ready.result(timeout=2)  # 2 second timeout
 
-            stub = app_pb2_grpc.AppStub(channel)
+            stub = blog_pb2_grpc.BlogStub(channel)
 
             # try to get the leader
-            res = stub.RPCGetLeaderInfo(app_pb2.Request(), timeout=2)
+            res = stub.RPCGetLeaderInfo(blog_pb2.Request(), timeout=2)
 
-            if res.operation == app_pb2.SUCCESS:
+            if res.operation == blog_pb2.SUCCESS:
                 leader_id = "".join(res.info)
 
                 # use if replica is leader
@@ -104,7 +116,7 @@ class Client:
                         channel_ready = grpc.channel_ready_future(leader_channel)
                         channel_ready.result(timeout=2)  # 2 second timeout
 
-                        self.stub = app_pb2_grpc.AppStub(leader_channel)
+                        self.stub = blog_pb2_grpc.AppStub(leader_channel)
                         logging.info(f"Successfully connected to leader {leader_id}")
                         self.working_replicas.add(leader_id)
                         self.working_replicas.add(
@@ -150,289 +162,220 @@ class Client:
             return False
         return True
 
+    # --------------------------------------------------------------------------
+    # User Authentication
+    # --------------------------------------------------------------------------
     def login(self, username, password):
-        """
-        Handles the login process for the client application.
-        """
-        if not self.ensure_connection():
-            return False, 0
-
+        if not self.ensure_leader():
+            return (False, 0)
         try:
-            # hash password
-            password_hash = hash_password(password)
-            request = app_pb2.Request(info=[username, password_hash])
-            request_size = request.ByteSize()
-            print("--------------------------------")
-            print(f"OPERATION: LOGIN")
-            print(f"SERIALIZED DATA LENGTH: {request_size} ")
-            print("--------------------------------")
-
-            # Use a timeout to avoid hanging
-            res = self.stub.RPCLogin(request, timeout=5)
-            status = res.operation
-
-            print(f"STATUS {status}")
-
-            if status == app_pb2.SUCCESS:
+            h = hash_password(password)
+            req = blog_pb2.Request(info=[username, h])
+            resp = self.leader_stub.RPCLogin(req, timeout=3.0)
+            if resp.operation == SUCCESS:
                 self.username = username
-                unread_messages = int(res.info[0])
-                return True, int(unread_messages)
-            else:
-                return False, 0
-
-        except grpc.RpcError as e:
-            if self.handle_rpc_error(e, "LOGIN"):
-                # Try once more if reconnection was successful
-                ret = self.login(username, password)
-                print(ret)
-                return ret
-            return False, 0
-
-    def logout(self):
-        if not self.username:
-            return True
-
-        if not self.ensure_connection():
-            return False
-
-        try:
-            request = app_pb2.Request(info=[self.username])
-            request_size = request.ByteSize()
-            print("--------------------------------")
-            print(f"OPERATION: LOGOUT")
-            print(f"SERIALIZED DATA LENGTH: {request_size} ")
-            print("--------------------------------")
-            res = self.stub.RPCLogout(request, timeout=5)
-            status = res.operation
-            if status == app_pb2.SUCCESS:
-                self.username = ""
-                return True
-            else:
-                return False
-        except grpc.RpcError as e:
-            if self.handle_rpc_error(e, "LOGOUT"):
-                return self.logout()
-            return False
+                unread = len(resp.notifications) if resp.notifications else 0
+                return (True, unread)
+            return (False, 0)
+        except:
+            self.leader_stub = None
+            return (False, 0)
 
     def create_account(self, username, password):
-        """
-        Handles the account creation process for the client application.
-        """
-        if not self.ensure_connection():
+        if not self.ensure_leader():
             return False
-
         try:
-            # hash password
-            password = hash_password(password)
-            # create the data object to send to the server, specifying the version number, operation type, and info
-            request = app_pb2.Request(info=[username, password])
-            request_size = request.ByteSize()
-            print("--------------------------------")
-            print(f"OPERATION: CREATE ACCOUNT")
-            print(f"SERIALIZED DATA LENGTH: {request_size} ")
-            print("--------------------------------")
-            res = self.stub.RPCCreateAccount(request, timeout=5)
-            status = res.operation
-
-            if status == app_pb2.SUCCESS:
-                return True
-            else:
-                return False
-
-        except grpc.RpcError as e:
-            if self.handle_rpc_error(e, "CREATE_ACCOUNT"):
-                return self.create_account(username, password)
+            hpw = hash_password(password)
+            req = blog_pb2.Request(info=[username, hpw])
+            resp = self.leader_stub.RPCCreateAccount(req, timeout=3.0)
+            return (resp.operation == SUCCESS)
+        except:
+            self.leader_stub = None
             return False
-
-    def list_accounts(self, search_string):
-        """
-        Handles the account listing process for the client application.
-        """
-        if not self.ensure_connection():
-            return []
-
-        try:
-            request = app_pb2.Request(info=[search_string])
-            request_size = request.ByteSize()
-            print("--------------------------------")
-            print(f"OPERATION: LIST ACCOUNTS")
-            print(f"SERIALIZED DATA LENGTH: {request_size} ")
-            print("--------------------------------")
-            res = self.stub.RPCListAccount(request, timeout=5)
-            status = res.operation
-            if status == app_pb2.SUCCESS:
-                return res.info
-            else:
-                logging.error("Listing accounts failed!")
-                return []
-        except grpc.RpcError as e:
-            if self.handle_rpc_error(e, "LIST_ACCOUNTS"):
-                return self.list_accounts(search_string)
-            return []
-
-    def send_message(self, receiver, msg):
-        """
-        Handles the message sending process for the client application.
-        """
-        if not self.ensure_connection():
-            return False
-
-        try:
-            request = app_pb2.Request(info=[self.username, receiver, msg])
-            request_size = request.ByteSize()
-            print("--------------------------------")
-            print(f"OPERATION: SEND MESSAGE")
-            print(f"SERIALIZED DATA LENGTH: {request_size} ")
-            print("--------------------------------")
-            res = self.stub.RPCSendMessage(request, timeout=5)
-            status = res.operation
-            if status == app_pb2.SUCCESS:
-                return True
-            else:
-                logging.error("Sending message unexpectedly failed")
-                return False
-
-        except grpc.RpcError as e:
-            if self.handle_rpc_error(e, "SEND_MESSAGE"):
-                return self.send_message(receiver, msg)
-            return False
-
-    def read_message(self):
-        """
-        Handles the message reading process for the client application.
-        """
-        if not self.ensure_connection():
-            return []
-
-        try:
-            request = app_pb2.Request(info=[self.username])
-            request_size = request.ByteSize()
-            print("--------------------------------")
-            print(f"OPERATION: READ MESSAGE")
-            print(f"SERIALIZED DATA LENGTH: {request_size} ")
-            print("--------------------------------")
-            res = self.stub.RPCReadMessage(request, timeout=5)
-            status = res.operation
-
-            if status == app_pb2.SUCCESS:
-                messages = res.messages
-                return messages
-            else:
-                logging.error("Reading message failed")
-                return []
-
-        except grpc.RpcError as e:
-            if self.handle_rpc_error(e, "READ_MESSAGE"):
-                return self.read_message()
-            return []
-
-    def delete_messages(self, messages):
-        """
-        Deletes a list of messages from the server.
-        """
-        # iterates through the list of messages and deletes each message
-        if not messages:
-            return True
-
-        success = True
-        for message in messages:
-            try:
-                sender = message.sender
-                receiver = message.receiver
-                timestamp = message.timestamp
-                msg = message.message
-                if not self.delete_message(sender, receiver, msg, timestamp):
-                    logging.error(
-                        f"message from {sender} to {receiver} on {timestamp} could not be deleted"
-                    )
-                    success = False
-            except KeyError as e:
-                logging.error(f"Message is missing required field: {e}")
-                success = False
-
-        return success
-
-    def delete_message(self, sender, receiver, msg, timestamp):
-        """
-        Deletes a single message from the server.
-        """
-        if not self.ensure_connection():
-            return False
-
-        try:
-            request = app_pb2.Request(info=[sender, receiver, msg, timestamp])
-            request_size = request.ByteSize()
-            print("--------------------------------")
-            print(f"OPERATION: DELETE MESSAGE")
-            print(f"SERIALIZED DATA LENGTH: {request_size} ")
-            print("--------------------------------")
-            res = self.stub.RPCDeleteMessage(request, timeout=5)
-            status = res.operation
-            if status == app_pb2.SUCCESS:
-                return True
-            else:
-                return False
-        except grpc.RpcError as e:
-            if self.handle_rpc_error(e, "DELETE_MESSAGE"):
-                return self.delete_message(sender, receiver, msg, timestamp)
-            return False
-
-    def get_instant_messages(self):
-        """
-        Gets instant messages for the current user.
-        """
-        if not self.username:
-            return []
-
-        if not self.ensure_connection():
-            return []
-
-        try:
-            request = app_pb2.Request(info=[self.username])
-            res = self.stub.RPCGetInstantMessages(request, timeout=5)
-            status = res.operation
-            if status == app_pb2.SUCCESS:
-                return res.messages
-            else:
-                return []
-        except grpc.RpcError as e:
-            # For instant messages, don't retry to avoid blocking the UI
-            print("ERRRORRRRR WITH INSTANT")
-            self.connect_to_any_replica()
-            logging.debug(f"Error getting instant messages: {e}")
-            return []
 
     def delete_account(self):
-        """
-        Handles the account deletion process for the client application.
-        """
-        if not self.ensure_connection():
+        if not self.ensure_leader():
             return False
-
+        if not self.username:
+            return False
         try:
-            request = app_pb2.Request(info=[self.username])
-            request_size = request.ByteSize()
-            print("--------------------------------")
-            print(f"OPERATION: DELETE ACCOUNT")
-            print(f"SERIALIZED DATA LENGTH: {request_size} ")
-            print("--------------------------------")
-            res = self.stub.RPCDeleteAccount(request, timeout=5)
-            status = res.operation
-            if status == app_pb2.SUCCESS:
-                self.username = ""
+            req = blog_pb2.Request(info=[self.username])
+            resp = self.leader_stub.RPCDeleteAccount(req, timeout=3.0)
+            if resp.operation == SUCCESS:
+                self.username = None
                 return True
-            else:
-                return False
-        except grpc.RpcError as e:
-            if self.handle_rpc_error(e, "DELETE_ACCOUNT"):
-                return self.delete_account()
+            return False
+        except:
+            self.leader_stub = None
             return False
 
-    # Legacy methods kept for compatibility
-    def create_data_object(self, version, operation, info):
-        return {"version": version, "type": operation, "info": [info]}
+    def logout(self):
+        if not self.ensure_leader():
+            return False
+        if not self.username:
+            return True
+        try:
+            req = blog_pb2.Request(info=[self.username])
+            resp = self.leader_stub.RPCLogout(req, timeout=3.0)
+            if resp.operation == SUCCESS:
+                self.username = None
+                return True
+            return False
+        except:
+            self.leader_stub = None
+            return False
 
-    def unwrap_data_object(self, data):
-        if data and len(data["info"]) == 1:
-            data["info"] = data["info"][0]
-        return data
+    def search_users(self, query):
+        if not self.ensure_leader():
+            return []
+        try:
+            req = blog_pb2.Request(info=[query])
+            resp = self.leader_stub.RPCSearchUsers(req, timeout=3.0)
+            if resp.operation == SUCCESS:
+                return resp.info
+            return []
+        except:
+            self.leader_stub = None
+            return []
+
+    # --------------------------------------------------------------------------
+    # Blog Post Operations
+    # --------------------------------------------------------------------------
+    def create_post(self, title, content):
+        if not self.ensure_leader():
+            return False
+        if not self.username:
+            return False
+        try:
+            req = blog_pb2.Request(info=[self.username, title, content])
+            resp = self.leader_stub.RPCCreatePost(req, timeout=3.0)
+            return (resp.operation == SUCCESS)
+        except:
+            self.leader_stub = None
+            return False
+
+    def like_post(self, post_id):
+        if not self.ensure_leader() or not self.username:
+            return False
+        try:
+            req = blog_pb2.Request(info=[self.username, post_id])
+            resp = self.leader_stub.RPCLikePost(req, timeout=3.0)
+            return (resp.operation == SUCCESS)
+        except:
+            self.leader_stub = None
+            return False
+
+    def delete_post(self, post_id):
+        if not self.ensure_leader() or not self.username:
+            return False
+        try:
+            req = blog_pb2.Request(info=[self.username, post_id])
+            resp = self.leader_stub.RPCDeletePost(req, timeout=3.0)
+            return (resp.operation == SUCCESS)
+        except:
+            self.leader_stub = None
+            return False
+    
+    def get_post(self, post_id):
+        if not self.ensure_leader():
+            return None
+        try:
+            req = blog_pb2.Request(info=[post_id])
+            resp = self.leader_stub.RPCGetPost(req, timeout=3.0)
+            if resp.operation == SUCCESS and resp.posts:
+                pid, author, title, content, ts, likes, comments_json = resp.posts
+                comments = json.loads(comments_json) if comments_json else []
+                return PostData(pid, author, title, content, ts, int(likes), comments)
+        except Exception:
+            self.leader_stub = None
+        return None
+
+    # --------------------------------------------------------------------------
+    # Fetch all posts for a user, returning full PostData objects
+    def get_user_posts(self, username=None):
+        if not self.ensure_leader():
+            return []
+        target = username if username else self.username
+        if not target:
+            return []
+        try:
+            req = blog_pb2.Request(info=[target])
+            resp = self.leader_stub.RPCGetUserPosts(req, timeout=3.0)
+            if resp.operation != SUCCESS:
+                return []
+            posts = []
+            for summary in resp.posts:
+                # summary format: post_id|title|timestamp|likes
+                parts = summary.split("|", 1)
+                pid = parts[0]
+                post_obj = self.get_post(pid)
+                if post_obj:
+                    posts.append(post_obj)
+            return posts
+        except Exception:
+            self.leader_stub = None
+            return []
+
+    # --------------------------------------------------------------------------
+    # Subscription Operations
+    # --------------------------------------------------------------------------
+    def subscribe(self, target_user):
+        if not self.ensure_leader() or not self.username:
+            return False
+        try:
+            req = blog_pb2.Request(info=[self.username, target_user])
+            resp = self.leader_stub.RPCSubscribe(req, timeout=3.0)
+            return (resp.operation == SUCCESS)
+        except:
+            self.leader_stub = None
+            return False
+
+    def unsubscribe(self, target_user):
+        if not self.ensure_leader() or not self.username:
+            return False
+        try:
+            req = blog_pb2.Request(info=[self.username, target_user])
+            resp = self.leader_stub.RPCUnsubscribe(req, timeout=3.0)
+            return (resp.operation == SUCCESS)
+        except:
+            self.leader_stub = None
+            return False
+
+    def get_subscriptions(self):
+        if not self.ensure_leader() or not self.username:
+            return []
+        try:
+            req = blog_pb2.Request(info=[self.username])
+            resp = self.leader_stub.RPCGetSubscriptions(req, timeout=3.0)
+            return resp.info if resp.operation == SUCCESS else []
+        except:
+            self.leader_stub = None
+            return []
+
+    def get_followers(self, username=None):
+        if not self.ensure_leader():
+            return []
+        try:
+            target_user = username if username else self.username
+            if not target_user:
+                return []
+            req = blog_pb2.Request(info=[target_user])
+            resp = self.leader_stub.RPCGetUserFollowers(req, timeout=3.0)
+            return resp.info if resp.operation == SUCCESS else []
+        except:
+            self.leader_stub = None
+            return []
+
+    # --------------------------------------------------------------------------
+    # Notification Operations
+    # --------------------------------------------------------------------------
+    def get_notifications(self):
+        if not self.ensure_leader() or not self.username:
+            return []
+        try:
+            req = blog_pb2.Request(info=[self.username])
+            resp = self.leader_stub.RPCGetNotifications(req, timeout=3.0)
+            return resp.notifications if resp.operation == SUCCESS else []
+        except:
+            self.leader_stub = None
+            return []

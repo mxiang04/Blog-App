@@ -2,24 +2,30 @@
   "replicas": [
     {
       "id": "replica1",
-      "host": "10.250.193.82",
+      "host": "127.0.0.1",
       "port": 5001,
-      "messages_store": "replica1_messages.csv",
-      "users_store": "replica1_users.csv"
+      "raft_store": "replica1_raft.json",
+      "posts_store": "replica1_posts.csv",
+      "users_store": "replica1_users.csv",
+      "subscriptions_store": "replica1_subscriptions.csv"
     },
     {
       "id": "replica2",
-      "host": "10.250.243.174",
+      "host": "127.0.0.1",
       "port": 5002,
-      "messages_store": "replica2_messages.csv",
-      "users_store": "replica2_users.csv"
+      "raft_store": "replica2_raft.json",
+      "posts_store": "replica_2_posts.csv",
+      "users_store": "replica2_users.csv",
+      "subscriptions_store": "replica2_subscriptions.csv"
     },
     {
       "id": "replica3",
-      "host": "10.250.243.174",
+      "host": "127.0.0.1",
       "port": 5003,
-      "messages_store": "replica3_messages.csv",
-      "users_store": "replica3_users.csv"
+      "raft_store": "replica3_raft.json",
+      "posts_store": "replica_3_posts.csv",
+      "users_store": "replica3_users.csv",
+      "subscriptions_store": "replica3_subscriptions.csv"
     }
   ]
 }

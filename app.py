@@ -1,56 +1,40 @@
-from datetime import datetime
-import json
-import os
-from dotenv import load_dotenv
 import tkinter as tk
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox, simpledialog, scrolledtext
+import sys
+import time
+import grpc
 import threading
-from tkinter import scrolledtext
+import multiprocessing
+import signal
+import json
+from datetime import datetime
+
 from client import Client
 from server import Server
-import time
-import logging
-import sys
-import grpc
-from protos import app_pb2_grpc
-from concurrent import futures
-import signal
-import multiprocessing
-from consensus import REPLICAS, Replica
+from consensus import get_replicas_config
+from util import hash_password
 
-
-class ChatAppGUI:
-    # Global connection ID counter
-    connection_id = 0
-
-    def __init__(self, root, protocol_version=None):
+class BlogAppGUI:
+    def __init__(self, root):
         self.root = root
-        self.root.title("Chat App")
+        self.root.title("Raft Blog App")
         self.main_frame = tk.Frame(root)
         self.main_frame.pack(padx=20, pady=20)
 
-        # assigned when Client is initialized
         self.client = None
-        self.notification_windows = []
-        self.unread_messages = []
-
-        # assigned when client and server are initialized
-        self.protocol_version = protocol_version
-
-        # create a frame for notifications
+        self.polling_thread = None
+        self.polling_active = False
         self.notification_frame = tk.Frame(root)
         self.notification_frame.pack(side="bottom", fill="x", padx=5, pady=5)
 
-        # create a label for notifications and new messages
-        self.messages_header = tk.Label(
+        self.notification_header = tk.Label(
             self.notification_frame,
-            text="New Messages",
+            text="Notifications",
             font=("Arial", 10, "bold"),
             fg="white",
         )
-        self.messages_header.pack(side="top", anchor="w", padx=5)
+        self.notification_header.pack(side="top", anchor="w", padx=5)
 
-        # allow notifications to be scrolled
         self.notification_text = scrolledtext.ScrolledText(
             self.notification_frame,
             height=3,
@@ -59,12 +43,11 @@ class ChatAppGUI:
             wrap=tk.WORD,
         )
         self.notification_text.pack(side="left", fill="x", expand=True)
-
-        self.messages = None
+        self.notification_frame.pack_forget()
 
         self.start_menu()
         self.root.protocol("WM_DELETE_WINDOW", self.on_exit)
-        self.root.after(100, self.check_interrupt)  # check for interrupts periodically
+        self.root.after(100, self.check_interrupt)
 
     def check_interrupt(self):
         try:
@@ -77,56 +60,31 @@ class ChatAppGUI:
         self.root.after(100, self.check_interrupt)
 
     def clear_frame(self):
-        """Clears all widgets from the main frame before switching screens."""
         for widget in self.main_frame.winfo_children():
             widget.destroy()
 
-    def show_notification(self):
-        """Display a popup notification for new messages"""
-
-        # update notification widget
-        self.notification_text.delete(1.0, tk.END)
-        for message in self.messages:
-            timestamp = message.timestamp
-            sender = message.sender
-            msg = message.message
-            self.notification_text.insert(
-                tk.END, f"[{timestamp}] From {sender}: {msg}\n"
-            )
-
-        # auto-scroll
-        self.notification_text.see(tk.END)
-
     def start_menu(self):
-        """Initial menu to choose between Client or Server."""
         self.notification_frame.pack_forget()
         self.clear_frame()
 
-        # create a label for the start menu
         tk.Label(self.main_frame, text="Select an Option", font=("Arial", 14)).pack(
             pady=10
         )
-
-        # create a button for the client
         tk.Button(
             self.main_frame, text="Client", command=self.start_client, width=20
         ).pack(pady=5)
-
-        # create a button for the server
         tk.Button(
             self.main_frame, text="Server", command=self.start_server, width=20
         ).pack(pady=5)
 
+    # --------------------------------------------------------------------------
+    # CLIENT UI
+    # --------------------------------------------------------------------------
     def start_client(self):
-        """Starts the client instance with Tkinter GUI."""
         self.clear_frame()
-        # lead_server_id = min(REPLICAS.keys())
-        # print(f"CLIENT SIDE {REPLICAS[lead_server_id].host}:{REPLICAS[lead_server_id].port}")
-        # self.channel = grpc.insecure_channel(f"{REPLICAS[lead_server_id].host}:{REPLICAS[lead_server_id].port}")
-        # self.stub = app_pb2_grpc.AppStub(self.channel)
         self.client = Client()
 
-        # start polling in a background thread
+        # Start polling for notifications in background
         self.polling_active = True
         self.polling_thread = threading.Thread(target=self.background_poll, daemon=True)
         self.polling_thread.start()
@@ -134,826 +92,625 @@ class ChatAppGUI:
         self.login_menu()
 
     def background_poll(self):
-        """Continuously polls for messages in background thread"""
-        if self.messages is None:
-            self.messages = self.client.get_instant_messages()
-            self.root.after(0, self.show_notification)
         while self.polling_active:
             try:
-                self.messages = self.client.get_instant_messages()
-                if len(self.messages) > 0:
-                    self.root.after(0, self.show_notification)
-                time.sleep(0.1)  # short sleep to prevent CPU spinning
-            except Exception as e:
-                print("ERRRORRRRR WITH INSTANT OUTSIDE")
-                time.sleep(0.5)
+                if self.client and self.client.username:
+                    # Get notifications
+                    notifications = self.client.get_notifications()
+                    if notifications:
+                        self.root.after(0, lambda: self.update_notifications(notifications))
+                time.sleep(1.0)
+            except:
+                time.sleep(1.0)
 
-    def cleanup(self):
-        """Clean up resources before closing"""
-        self.polling_active = False
-        if hasattr(self, "polling_thread"):
-            self.polling_thread.join(timeout=1.0)
-        if self.client:
-            self.client.logout()
+    def update_notifications(self, notifications):
+        self.notification_text.delete(1.0, tk.END)
+        for notif in notifications:
+            t = notif.timestamp
+            from_user = getattr(notif, 'from')
+            notif_type = notif.type
+            post_title = notif.title
+            self.notification_text.insert(tk.END, f"[{t}] {from_user} {notif_type}: {post_title}\n")
+        self.notification_text.see(tk.END)
 
     def login_menu(self):
-        """Login screen with username and password input fields."""
         self.clear_frame()
-
-        # create a label for the login screen
         tk.Label(self.main_frame, text="Login", font=("Arial", 14)).pack(pady=10)
 
-        # create a label for the username
         tk.Label(self.main_frame, text="Username:").pack()
         self.username_entry = tk.Entry(self.main_frame)
         self.username_entry.pack()
 
-        # create a label for the password
         tk.Label(self.main_frame, text="Password:").pack()
         self.password_entry = tk.Entry(self.main_frame, show="*")
         self.password_entry.pack()
 
-        # create a button for the login
         tk.Button(
             self.main_frame, text="Login", command=self.attempt_login, width=20
         ).pack(pady=5)
-
-        # create a button for the create account
         tk.Button(
-            self.main_frame,
-            text="Create Account",
-            command=self.create_account_menu,
-            width=20,
+            self.main_frame, text="Create Account", command=self.create_account_menu, width=20
         ).pack(pady=5)
-
-        # create a button for the list accounts
         tk.Button(
-            self.main_frame,
-            text="List Accounts",
-            command=self.list_accounts_menu,
-            width=20,
+            self.main_frame, text="Search Users", command=self.search_users_menu, width=20
         ).pack(pady=5)
-
-        # create a button for the back
-        tk.Button(self.main_frame, text="Back", command=self.start_menu, width=20).pack(
-            pady=5
-        )
+        tk.Button(
+            self.main_frame, text="Back", command=self.start_menu, width=20
+        ).pack(pady=5)
 
     def attempt_login(self):
-        """Gets username and password from entries and calls client.login()."""
         username = self.username_entry.get().strip()
         password = self.password_entry.get().strip()
-
-        # check if both fields are filled
         if not username or not password:
             messagebox.showerror("Error", "Both fields are required!")
             return
 
-        success, unread_messages = self.client.login(username, password)
-
-        # check if login was successful
-        if success:
-            messagebox.showinfo(
-                "Success",
-                f"Login successful! You have {unread_messages} unread messages.",
-            )
+        ok, unread = self.client.login(username, password)
+        if ok:
+            messagebox.showinfo("Success", f"Login successful! {unread} unread notifications.")
             self.notification_frame.pack(side="bottom", fill="x", padx=5, pady=5)
-            self.messages_header.pack(side="top", anchor="w", padx=5)
+            self.notification_header.pack(side="top", anchor="w", padx=5)
             self.user_menu()
         else:
             messagebox.showerror("Error", "Login failed. Try again.")
 
-    def list_accounts_menu(self):
-        """Gets search string to list accounts"""
-        self.clear_frame()
-
-        # create a label for the list accounts screen
-        tk.Label(
-            self.main_frame, text="Search for an account", font=("Arial", 14)
-        ).pack(pady=10)
-
-        # create a label for the username
-        tk.Label(self.main_frame, text="Username:").pack()
-
-        # create a label for the username search entry
-        self.username_search_entry = tk.Entry(self.main_frame)
-        self.username_search_entry.pack()
-
-        # create a button for the search account
-        tk.Button(
-            self.main_frame,
-            text="Search Account",
-            command=self.attempt_list_accounts,
-            width=20,
-        ).pack(pady=5)
-
-        # create a button for the back
-        tk.Button(self.main_frame, text="Back", command=self.login_menu, width=20).pack(
-            pady=5
-        )
-
-    def attempt_list_accounts(self):
-        """Lists accounts associated under a given search string"""
-        username = self.username_search_entry.get().strip()
-
-        # check if the search string is filled
-        if not username:
-            messagebox.showerror("Error", "Search string is required!")
-            return
-
-        # get accounts
-        accounts = self.client.list_accounts(username)
-
-        # check if accounts were returned
-        if accounts is not None:
-            if len(accounts) == 0:
-                messagebox.showinfo("Success", "No accounts found")
-
-            else:
-                messagebox.showinfo("Success", "Searched accounts were returned")
-                self.display_accounts(accounts)
-        else:
-            messagebox.showerror("Error", "Account search failed.")
-
-    def display_accounts(self, accounts):
-        """Lists accounts under the GUI"""
-        msg_window = tk.Toplevel(self.root)
-        msg_window.title("Accounts")
-        msg_window.geometry("450x400")
-
-        # Scrollable Listbox
-        listbox_frame = tk.Frame(msg_window)
-        listbox_frame.pack(pady=10, fill="both", expand=True)
-
-        scrollbar = tk.Scrollbar(listbox_frame, orient="vertical")
-        self.listbox = tk.Listbox(
-            listbox_frame,
-            selectmode=tk.MULTIPLE,
-            width=60,
-            height=15,
-            yscrollcommand=scrollbar.set,
-        )
-
-        scrollbar.config(command=self.listbox.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.listbox.pack(side="left", fill="both", expand=True)
-
-        for acc in accounts:
-            display_text = f"{acc}"  # Show preview
-            self.listbox.insert("end", display_text)
-
     def create_account_menu(self):
-        """Account creation screen."""
         self.clear_frame()
-
-        # create a label for the create account screen
         tk.Label(self.main_frame, text="Create Account", font=("Arial", 14)).pack(
             pady=10
         )
 
-        # create a label for the username
         tk.Label(self.main_frame, text="Username:").pack()
         self.new_username_entry = tk.Entry(self.main_frame)
         self.new_username_entry.pack()
 
-        # create a label for the password
         tk.Label(self.main_frame, text="Password:").pack()
         self.new_password_entry = tk.Entry(self.main_frame, show="*")
         self.new_password_entry.pack()
 
-        # create a button for the create account
         tk.Button(
             self.main_frame,
             text="Create Account",
             command=self.attempt_create_account,
             width=20,
         ).pack(pady=5)
-
-        # create a button for the back
-        tk.Button(self.main_frame, text="Back", command=self.login_menu, width=20).pack(
-            pady=5
-        )
+        tk.Button(
+            self.main_frame, text="Back", command=self.login_menu, width=20
+        ).pack(pady=5)
 
     def attempt_create_account(self):
-        """Gets username and password for account creation and calls client.create_account()."""
         username = self.new_username_entry.get().strip()
         password = self.new_password_entry.get().strip()
-
         if not username or not password:
             messagebox.showerror("Error", "Both fields are required!")
             return
-
-        success = self.client.create_account(username, password)
-
-        if success:
+        ok = self.client.create_account(username, password)
+        if ok:
             messagebox.showinfo("Success", "Account created successfully!")
             self.login_menu()
         else:
             messagebox.showerror("Error", "Account creation failed.")
 
-    def user_menu(self):
-        """User menu after login."""
+    def search_users_menu(self):
         self.clear_frame()
-
-        # create a label for the user menu
-        tk.Label(
-            self.main_frame,
-            text=f"Welcome, {self.client.username}!",
-            font=("Arial", 14),
-        ).pack(pady=10)
-
-        # create a button for the send message
-        tk.Button(
-            self.main_frame,
-            text="Send Message",
-            command=self.send_message_menu,
-            width=20,
-        ).pack(pady=5)
-
-        # create a button for the read messages
-        tk.Button(
-            self.main_frame, text="Read Messages", command=self.read_messages, width=20
-        ).pack(pady=5)
-
-        # create a button for the delete account
-        tk.Button(
-            self.main_frame,
-            text="Delete Account",
-            command=self.delete_account,
-            width=20,
-        ).pack(pady=5)
-
-        # create a button for logout
-        tk.Button(
-            self.main_frame,
-            text="Logout",
-            command=self.logout,
-            width=20,
-        ).pack(pady=5)
-
-    def send_message_menu(self):
-        """Message sending screen."""
-        self.clear_frame()
-
-        # create a label for the send message screen
-        tk.Label(self.main_frame, text="Send Message", font=("Arial", 14)).pack(pady=10)
-
-        # create a label for the receiver
-        tk.Label(self.main_frame, text="Receiver:").pack()
-        self.receiver_entry = tk.Entry(self.main_frame)
-        self.receiver_entry.pack()
-
-        tk.Label(self.main_frame, text="Message:").pack()
-        self.message_entry = tk.Entry(self.main_frame)
-        self.message_entry.pack()
-
-        tk.Button(
-            self.main_frame, text="Send", command=self.attempt_send_message, width=20
-        ).pack(pady=5)
-        tk.Button(self.main_frame, text="Back", command=self.user_menu, width=20).pack(
-            pady=5
+        tk.Label(self.main_frame, text="Search for Users", font=("Arial", 14)).pack(
+            pady=10
         )
 
-    def attempt_send_message(self):
-        """Gets receiver and message and calls client.send_message()."""
-        receiver = self.receiver_entry.get().strip()
-        message = self.message_entry.get().strip()
+        tk.Label(self.main_frame, text="Search Query:").pack()
+        self.search_users_entry = tk.Entry(self.main_frame)
+        self.search_users_entry.pack()
 
-        if not receiver or not message:
-            messagebox.showerror("Error", "Both fields are required!")
-            return
-
-        success = self.client.send_message(receiver, message)
-
-        if success:
-            messagebox.showinfo("Success", "Message sent successfully!")
-        else:
-            messagebox.showerror("Error", "Failed to send message.")
-
-        self.user_menu()
-
-    def read_messages(self):
-        """Fetch messages and display options for reading and deleting."""
-        self.unread_messages.clear()
-        self.notification_text.delete(1.0, tk.END)
-
-        messages = self.client.read_message()
-
-        if messages is None:
-            messagebox.showerror("Error", "Failed to retrieve messages.")
-            return
-
-        total_messages = len(messages)
-        if total_messages == 0:
-            messagebox.showinfo("Messages", "No messages.")
-            return
-
-        # Ask how many messages to read
-        num_to_read = simpledialog.askinteger(
-            "Messages",
-            f"You have {total_messages} messages.\nHow many do you want to read?",
-            minvalue=0,
-            maxvalue=total_messages,
-        )
-
-        if num_to_read is None or num_to_read == 0:
-            return  # User canceled input
-        # Create a new window for messages
-        self.display_messages(messages[-num_to_read:])
-
-    def display_messages(self, messages):
-        """Display messages in a Listbox with multi-select for deletion."""
-        self.msg_window = tk.Toplevel(self.root)
-        self.msg_window.title("Your Messages")
-        self.msg_window.geometry("450x400")
-
-        tk.Label(
-            self.msg_window,
-            text="Select messages to delete:",
-            font=("Arial", 12, "bold"),
+        tk.Button(
+            self.main_frame,
+            text="Search",
+            command=self.attempt_search_users,
+            width=20,
+        ).pack(pady=5)
+        tk.Button(
+            self.main_frame, text="Back", command=self.login_menu, width=20
         ).pack(pady=5)
 
-        # Scrollable Listbox
-        listbox_frame = tk.Frame(self.msg_window)
+    def attempt_search_users(self):
+        query = self.search_users_entry.get().strip()
+        if not query:
+            messagebox.showerror("Error", "Search query is required!")
+            return
+        users = self.client.search_users(query)
+        if users is None:
+            messagebox.showerror("Error", "User search failed.")
+            return
+        if len(users) == 0:
+            messagebox.showinfo("Results", "No users found.")
+            return
+        self.display_users(users)
+
+    def display_users(self, users):
+        user_window = tk.Toplevel(self.root)
+        user_window.title("Users")
+        user_window.geometry("450x400")
+
+        listbox_frame = tk.Frame(user_window)
         listbox_frame.pack(pady=10, fill="both", expand=True)
 
         scrollbar = tk.Scrollbar(listbox_frame, orient="vertical")
-        self.listbox = tk.Listbox(
-            listbox_frame,
-            selectmode=tk.MULTIPLE,
+        lb = tk.Listbox(listbox_frame, width=60, height=15, yscrollcommand=scrollbar.set)
+        scrollbar.config(command=lb.yview)
+        scrollbar.pack(side="right", fill="y")
+        lb.pack(side="left", fill="both", expand=True)
+
+        for user in users:
+            lb.insert("end", user)
+
+        def on_subscribe():
+            if not self.client.username:
+                messagebox.showinfo("Error", "You must be logged in to subscribe.")
+                return
+                
+            sel = lb.curselection()
+            if not sel:
+                messagebox.showinfo("Info", "No user selected.")
+                return
+            selected_user = users[sel[0]]
+            ok = self.client.subscribe(selected_user)
+            if ok:
+                messagebox.showinfo("Success", f"Subscribed to {selected_user}!")
+            else:
+                messagebox.showerror("Error", "Failed to subscribe.")
+
+        tk.Button(user_window, text="Subscribe to Selected", command=on_subscribe).pack(pady=10)
+
+    def user_menu(self):
+        self.clear_frame()
+        tk.Label(self.main_frame, text=f"Welcome, {self.client.username}!", font=("Arial", 14)).pack(pady=10)
+
+        tk.Button(
+            self.main_frame, text="Create Post", command=self.create_post_menu, width=20
+        ).pack(pady=5)
+        tk.Button(
+            self.main_frame, text="View Your Posts", command=self.view_own_posts, width=20
+        ).pack(pady=5)
+        tk.Button(
+            self.main_frame, text="View User Posts", command=self.view_user_posts_menu, width=20
+        ).pack(pady=5)
+        tk.Button(
+            self.main_frame, text="Manage Subscriptions", command=self.manage_subscriptions_menu, width=20
+        ).pack(pady=5)
+        tk.Button(
+            self.main_frame, text="View Notifications", command=self.view_notifications, width=20
+        ).pack(pady=5)
+        tk.Button(
+            self.main_frame, text="Delete Account", command=self.delete_account, width=20
+        ).pack(pady=5)
+        tk.Button(
+            self.main_frame, text="Logout", command=self.logout, width=20
+        ).pack(pady=5)
+
+    def create_post_menu(self):
+        self.clear_frame()
+        tk.Label(self.main_frame, text="Create New Post", font=("Arial", 14)).pack(pady=10)
+
+        tk.Label(self.main_frame, text="Title:").pack()
+        self.post_title_entry = tk.Entry(self.main_frame, width=50)
+        self.post_title_entry.pack(pady=5)
+
+        tk.Label(self.main_frame, text="Content:").pack()
+        self.post_content_text = scrolledtext.ScrolledText(
+            self.main_frame, width=50, height=10
+        )
+        self.post_content_text.pack(pady=5)
+
+        tk.Button(
+            self.main_frame, text="Create Post", command=self.attempt_create_post, width=20
+        ).pack(pady=5)
+        tk.Button(
+            self.main_frame, text="Back", command=self.user_menu, width=20
+        ).pack(pady=5)
+
+    def attempt_create_post(self):
+        title = self.post_title_entry.get().strip()
+        content = self.post_content_text.get("1.0", tk.END).strip()
+        
+        if not title or not content:
+            messagebox.showerror("Error", "Both title and content are required!")
+            return
+            
+        ok = self.client.create_post(title, content)
+        if ok:
+            messagebox.showinfo("Success", "Post created successfully!")
+            self.user_menu()
+        else:
+            messagebox.showerror("Error", "Failed to create post.")
+
+    def view_own_posts(self):
+        posts = self.client.get_user_posts()
+        if not posts:
+            messagebox.showinfo("Posts", "You have no posts.")
+            return
+        self.display_posts(posts)
+
+    def view_user_posts_menu(self):
+        self.clear_frame()
+        tk.Label(self.main_frame, text="View User's Posts", font=("Arial", 14)).pack(pady=10)
+
+        tk.Label(self.main_frame, text="Username:").pack()
+        self.user_posts_entry = tk.Entry(self.main_frame)
+        self.user_posts_entry.pack(pady=5)
+
+        tk.Button(
+            self.main_frame, text="View Posts", command=self.attempt_view_user_posts, width=20
+        ).pack(pady=5)
+        tk.Button(
+            self.main_frame, text="Back", command=self.user_menu, width=20
+        ).pack(pady=5)
+
+    def attempt_view_user_posts(self):
+        username = self.user_posts_entry.get().strip()
+        if not username:
+            messagebox.showerror("Error", "Username is required!")
+            return
+            
+        posts = self.client.get_user_posts(username)
+        if not posts:
+            messagebox.showinfo("Posts", f"{username} has no posts.")
+            return
+        self.display_posts(posts)
+
+    def display_posts(self, posts):
+        posts_window = tk.Toplevel(self.root)
+        posts_window.title("Posts")
+        posts_window.geometry("600x500")
+
+        main_frame = tk.Frame(posts_window)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Create a canvas with scrollbar
+        canvas = tk.Canvas(main_frame)
+        scrollbar = tk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Add posts to the scrollable frame
+        for post in posts:
+            post_frame = tk.Frame(scrollable_frame, relief=tk.RAISED, borderwidth=1)
+            post_frame.pack(fill="x", padx=5, pady=5, expand=True)
+            
+            # Post header
+            header_frame = tk.Frame(post_frame)
+            header_frame.pack(fill="x", padx=5, pady=2)
+            
+            tk.Label(
+                header_frame, 
+                text=post.title,
+                font=("Arial", 12, "bold")
+            ).pack(side="left")
+            
+            likes_label = tk.Label(
+                header_frame,
+                text=f"❤️ {post.likes}",
+                font=("Arial", 10)
+            )
+            likes_label.pack(side="right")
+            
+            # Author and date
+            info_frame = tk.Frame(post_frame)
+            info_frame.pack(fill="x", padx=5, pady=2)
+            
+            tk.Label(
+                info_frame,
+                text=f"By {post.author} on {post.timestamp[:19]}",
+                font=("Arial", 8, "italic")
+            ).pack(side="left")
+            
+            # Post content
+            content_text = scrolledtext.ScrolledText(
+                post_frame, 
+                height=4, 
+                wrap=tk.WORD,
+                font=("Arial", 10)
+            )
+            content_text.pack(fill="x", padx=5, pady=2)
+            content_text.insert(tk.END, post.content)
+            content_text.config(state=tk.DISABLED)
+            
+            # Button frame
+            button_frame = tk.Frame(post_frame)
+            button_frame.pack(fill="x", padx=5, pady=2)
+            
+            # Like button
+            def like_post_callback(post_id=post.post_id, label=likes_label):
+                if self.client.like_post(post_id):
+                    current_likes = int(label.cget("text").split(" ")[1]) + 1
+                    label.config(text=f"❤️ {current_likes}")
+                else:
+                    messagebox.showerror("Error", "Failed to like post.")
+            
+            tk.Button(
+                button_frame,
+                text="Like",
+                command=like_post_callback
+            ).pack(side="left", padx=2)
+            
+            # Delete button (only for own posts)
+            if post.author == self.client.username:
+                def delete_post_callback(post_id=post.post_id, frame=post_frame):
+                    if messagebox.askyesno("Delete Post", "Are you sure you want to delete this post?"):
+                        if self.client.delete_post(post_id):
+                            frame.destroy()
+                        else:
+                            messagebox.showerror("Error", "Failed to delete post.")
+                
+                tk.Button(
+                    button_frame,
+                    text="Delete",
+                    command=delete_post_callback
+                ).pack(side="right", padx=2)
+                
+            # Comments section
+            if post.comments:
+                tk.Label(
+                    post_frame,
+                    text=f"Comments ({len(post.comments)})",
+                    font=("Arial", 10, "bold")
+                ).pack(anchor="w", padx=5, pady=2)
+                
+                for comment in post.comments:
+                    comment_frame = tk.Frame(post_frame, relief=tk.SUNKEN, borderwidth=1)
+                    comment_frame.pack(fill="x", padx=15, pady=2)
+                    
+                    tk.Label(
+                        comment_frame,
+                        text=f"{comment.author} ({comment.timestamp[:19]}): {comment.content}",
+                        font=("Arial", 9),
+                        wraplength=500,
+                        anchor="w",
+                        justify=tk.LEFT
+                    ).pack(fill="x", padx=5, pady=2)
+    
+    def open_post_window(self, post_id):
+        post = self.client.get_post(post_id)
+        if not post:
+            messagebox.showerror("Error", "Could not fetch post.")
+            return
+        w = tk.Toplevel(self.root)
+        w.title(post.title)
+        tk.Label(w, text=post.title, font=("Arial", 14, "bold")).pack(pady=5)
+        tk.Label(w, text=f"By {post.author} on {post.timestamp}", 
+                font=("Arial", 10, "italic")).pack(pady=5)
+        txt = scrolledtext.ScrolledText(w, wrap=tk.WORD, width=60, height=20)
+        txt.insert(tk.END, post.content)
+        txt.config(state=tk.DISABLED)
+        txt.pack(padx=10, pady=10)
+
+    def manage_subscriptions_menu(self):
+        self.clear_frame()
+        tk.Label(self.main_frame, text="Manage Subscriptions", font=("Arial", 14)).pack(pady=10)
+        
+        # Create tabs for subscriptions and followers
+        tab_frame = tk.Frame(self.main_frame)
+        tab_frame.pack(fill="both", expand=True)
+        
+        subscriptions_button = tk.Button(
+            tab_frame, 
+            text="Your Subscriptions", 
+            command=self.view_subscriptions,
+            width=20
+        )
+        subscriptions_button.pack(side="left", padx=5, pady=5)
+        
+        followers_button = tk.Button(
+            tab_frame,
+            text="Your Followers",
+            command=self.view_followers,
+            width=20
+        )
+        followers_button.pack(side="left", padx=5, pady=5)
+        
+        tk.Button(
+            self.main_frame, text="Back", command=self.user_menu, width=20
+        ).pack(pady=10)
+
+    def view_subscriptions(self):
+        subscriptions = self.client.get_subscriptions()
+        if not subscriptions:
+            messagebox.showinfo("Subscriptions", "You are not subscribed to any users.")
+            return
+        
+        sub_window = tk.Toplevel(self.root)
+        sub_window.title("Your Subscriptions")
+        sub_window.geometry("400x300")
+        
+        tk.Label(sub_window, text="Users you follow:", font=("Arial", 12, "bold")).pack(pady=5)
+        
+        listbox_frame = tk.Frame(sub_window)
+        listbox_frame.pack(pady=10, fill="both", expand=True)
+        
+        scrollbar = tk.Scrollbar(listbox_frame, orient="vertical")
+        lb = tk.Listbox(listbox_frame, width=40, height=10, yscrollcommand=scrollbar.set)
+        scrollbar.config(command=lb.yview)
+        scrollbar.pack(side="right", fill="y")
+        lb.pack(side="left", fill="both", expand=True)
+        
+        for sub in subscriptions:
+            lb.insert("end", sub)
+            
+        def on_unsubscribe():
+            sel = lb.curselection()
+            if not sel:
+                messagebox.showinfo("Info", "No user selected.")
+                return
+            selected_user = subscriptions[sel[0]]
+            ok = self.client.unsubscribe(selected_user)
+            if ok:
+                messagebox.showinfo("Success", f"Unsubscribed from {selected_user}!")
+                lb.delete(sel)
+            else:
+                messagebox.showerror("Error", "Failed to unsubscribe.")
+                
+        tk.Button(sub_window, text="Unsubscribe from Selected", command=on_unsubscribe).pack(pady=10)
+
+    def view_followers(self):
+        followers = self.client.get_followers()
+        if not followers:
+            messagebox.showinfo("Followers", "You have no followers.")
+            return
+        
+        followers_window = tk.Toplevel(self.root)
+        followers_window.title("Your Followers")
+        followers_window.geometry("400x300")
+        
+        tk.Label(followers_window, text="Users following you:", font=("Arial", 12, "bold")).pack(pady=5)
+        
+        listbox_frame = tk.Frame(followers_window)
+        listbox_frame.pack(pady=10, fill="both", expand=True)
+        
+        scrollbar = tk.Scrollbar(listbox_frame, orient="vertical")
+        lb = tk.Listbox(listbox_frame, width=40, height=10, yscrollcommand=scrollbar.set)
+        scrollbar.config(command=lb.yview)
+        scrollbar.pack(side="right", fill="y")
+        lb.pack(side="left", fill="both", expand=True)
+        
+        for follower in followers:
+            lb.insert("end", follower)
+
+    def view_notifications(self):
+        notifications = self.client.get_notifications()
+        if not notifications:
+            messagebox.showinfo("Notifications", "You have no notifications.")
+            return
+        
+        notif_window = tk.Toplevel(self.root)
+        notif_window.title("Your Notifications")
+        notif_window.geometry("500x400")
+        
+        tk.Label(notif_window, text="Notifications:", font=("Arial", 12, "bold")).pack(pady=5)
+        
+        listbox = scrolledtext.ScrolledText(
+            notif_window,
             width=60,
             height=15,
-            yscrollcommand=scrollbar.set,
+            font=("Arial", 10),
+            wrap=tk.WORD
         )
-
-        scrollbar.config(command=self.listbox.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.listbox.pack(side="left", fill="both", expand=True)
-
-        # populate listbox with messages
-        self.message_map = {}  # maps listbox index to message object
-        for idx, msg in enumerate(messages):
-            sender, receiver, content, timestamp = (
-                msg.sender,
-                msg.receiver,
-                msg.message,
-                msg.timestamp,
-            )
-            displayed_timestamp = datetime.strptime(
-                timestamp, "%Y-%m-%d %H:%M:%S.%f"
-            ).strftime("%Y-%m-%d")
-            display_text = f"From {sender} to {receiver} on {displayed_timestamp}: {content[:50]}"  # Show preview
-            self.listbox.insert("end", display_text)
-            self.message_map[idx] = msg  # Store full message
-
-        delete_button = tk.Button(
-            self.msg_window, text="Delete Selected", command=self.delete_selected
-        )
-        delete_button.pack(pady=10)
-
-    def delete_selected(self):
-        """Deletes selected messages from the listbox."""
-        selected_indices = self.listbox.curselection()
-        if not selected_indices:
-            messagebox.showinfo("Info", "No messages selected for deletion.")
-            return
-
-        to_delete = [self.message_map[idx] for idx in selected_indices]
-        result = self.client.delete_messages(to_delete)
-
-        if result:
-            messagebox.showinfo("Success", "Selected messages deleted successfully!")
-            self.msg_window.destroy()
-        else:
-            messagebox.showerror("Error", "Failed to delete some messages.")
+        listbox.pack(pady=10, fill="both", expand=True)
+        
+        for notif in notifications:
+            post_id = notif.post_id
+            from_user = getattr(notif, 'from')
+            notif_type = notif.type
+            title = notif.title
+            ts = notif.timestamp
+            
+            listbox.insert(tk.END, f"[{ts}] {from_user} {notif_type}: {title} (Post ID: {post_id})\n")
+            listbox.insert(tk.END, "-" * 50 + "\n")
+        
+        listbox.config(state=tk.DISABLED)
 
     def delete_account(self):
-        """Deletes the user's account."""
-        confirmation = messagebox.askyesno(
-            "Delete Account", "Are you sure you want to delete your account?"
-        )
-        if confirmation:
-            success = self.client.delete_account()
-            if success:
+        confirm = messagebox.askyesno("Delete Account", "Are you sure you want to delete your account? This action cannot be undone.")
+        if confirm:
+            ok = self.client.delete_account()
+            if ok:
                 messagebox.showinfo("Success", "Account deleted successfully.")
                 self.start_menu()
             else:
                 messagebox.showerror("Error", "Account deletion failed.")
 
     def logout(self):
-        """Logs out the current user and returns to login menu."""
-        if self.client and self.client.logout():
+        ok = self.client.logout()
+        if ok:
             messagebox.showinfo("Success", "Logged out successfully!")
-            self.client.username = None  # Clear the current user
-            self.messages = None
-            self.notification_frame.pack_forget()  # Hide notifications
+            self.client.username = None
+            self.notification_frame.pack_forget()
             self.login_menu()
         else:
             messagebox.showerror("Error", "Log out unsuccessful!")
 
+    # --------------------------------------------------------------------------
+    # SERVER UI
+    # --------------------------------------------------------------------------
     def start_server(self):
-        """Starts the server in a separate thread and displays replica management interface."""
         self.clear_frame()
 
-        # Create header
-        tk.Label(
-            self.main_frame, text="Server Running", font=("Arial", 14, "bold")
-        ).pack(pady=10)
-
-        # Create frame for replica list
-        replicas_frame = tk.Frame(self.main_frame)
-        replicas_frame.pack(fill="both", expand=True, padx=10, pady=5)
-
-        # Create scrollable list view for replicas
-        list_frame = tk.Frame(replicas_frame)
-        list_frame.pack(fill="both", expand=True)
-
-        # Headers for the replica list
-        headers_frame = tk.Frame(list_frame)
-        headers_frame.pack(fill="x")
-
-        header_fields = [
-            "ID",
-            "Host",
-            "Port",
-            "Messages Store",
-            "Users Store",
-            "Actions",
-        ]
-        col_widths = [10, 15, 8, 20, 20, 15]
-
-        for i, header in enumerate(header_fields):
-            tk.Label(
-                headers_frame,
-                text=header,
-                font=("Arial", 10, "bold"),
-                width=col_widths[i],
-            ).grid(row=0, column=i, padx=5, pady=5, sticky="w")
-
-        # Create proper scrollable frame with both vertical and horizontal scrollbars
-        container_frame = tk.Frame(list_frame)
-        container_frame.pack(fill="both", expand=True)
-
-        # Add both scrollbars
-        v_scrollbar = tk.Scrollbar(container_frame, orient="vertical")
-        h_scrollbar = tk.Scrollbar(container_frame, orient="horizontal")
-
-        # Place scrollbars
-        v_scrollbar.pack(side="right", fill="y")
-        h_scrollbar.pack(side="bottom", fill="x")
-
-        # Create canvas with proper scrolling
-        canvas = tk.Canvas(container_frame)
-        canvas.pack(side="left", fill="both", expand=True)
-
-        # Connect scrollbars to canvas
-        v_scrollbar.config(command=canvas.yview)
-        h_scrollbar.config(command=canvas.xview)
-        canvas.config(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
-
-        # Create inner frame for content
-        replica_list_frame = tk.Frame(canvas)
-
-        # Add the frame to the canvas
-        canvas_window = canvas.create_window(
-            (0, 0), window=replica_list_frame, anchor="nw"
-        )
-
-        # Configure canvas scrolling
-        def configure_canvas(event):
-            # Update the scrollregion to encompass the inner frame
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-            # Make sure the window expands properly
-            required_width = replica_list_frame.winfo_reqwidth()
-            required_height = replica_list_frame.winfo_reqheight()
-            canvas.config(
-                width=min(required_width, 800), height=min(required_height, 400)
-            )
-            canvas.itemconfig(canvas_window, width=required_width)
-
-        replica_list_frame.bind("<Configure>", configure_canvas)
-
-        # Allow mousewheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        # Function to create unique commands for each button
-        def create_start_command(replica_id, replica_data):
-            return lambda: self.start_specific_replica(replica_data)
-
-        def create_remove_command(replica_id, replica_data):
-            return lambda: self.remove_replica(replica_data)
-
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-        # Load replicas from JSON file
-        try:
-            with open("replicas.json", "r") as file:
-                replicas_data = json.load(file)
-                replicas = replicas_data.get("replicas", [])
-        except (FileNotFoundError, json.JSONDecodeError):
-            replicas = []
-
-        # Store button functions to prevent garbage collection
-        self.button_commands = []
-
-        # Display each replica
-        for i, replica in enumerate(replicas):
-            replica_id = replica.get("id", f"replica{i+1}")
-
-            for j, key in enumerate(
-                ["id", "host", "port", "messages_store", "users_store"]
-            ):
-                tk.Label(
-                    replica_list_frame,
-                    text=str(replica.get(key, "")),
-                    width=col_widths[j],
-                ).grid(row=i, column=j, padx=5, pady=2, sticky="w")
-
-            # Add action buttons for each replica
-            actions_frame = tk.Frame(replica_list_frame)
-            actions_frame.grid(row=i, column=5, padx=5, pady=2)
-
-            # Create specific command functions for this replica
-            start_cmd = create_start_command(replica_id, replica)
-            remove_cmd = create_remove_command(replica_id, replica)
-
-            # Store commands to prevent garbage collection
-            self.button_commands.append(start_cmd)
-            self.button_commands.append(remove_cmd)
-
-            # Create buttons with the specific commands
-            start_button = tk.Button(actions_frame, text="Start", command=start_cmd)
-            start_button.pack(side="left", padx=2)
-
-            remove_button = tk.Button(actions_frame, text="Remove", command=remove_cmd)
-            remove_button.pack(side="left", padx=2)
-
-        # Create form to add new replicas
-        add_frame = tk.LabelFrame(self.main_frame, text="Add New Replica")
-        add_frame.pack(fill="x", padx=10, pady=10)
-
-        form_fields = [
-            ("ID:", "id"),
-            ("Host:", "host"),
-            ("Port:", "port"),
-            ("Messages Store:", "messages_store"),
-            ("Users Store:", "users_store"),
-        ]
-
-        entry_widgets = {}
-
-        for i, (label_text, field_name) in enumerate(form_fields):
-            tk.Label(add_frame, text=label_text).grid(
-                row=i, column=0, padx=5, pady=5, sticky="e"
-            )
-            entry = tk.Entry(add_frame)
-            entry.grid(row=i, column=1, padx=5, pady=5, sticky="ew")
-            entry_widgets[field_name] = entry
-
-        # Add default values
-        if not replicas:
-            entry_widgets["id"].insert(0, "replica1")
-            entry_widgets["host"].insert(0, "localhost")
-            entry_widgets["port"].insert(0, "5001")
-            entry_widgets["messages_store"].insert(0, "replica1_messages.csv")
-            entry_widgets["users_store"].insert(0, "replica1_users.csv")
+        reps = get_replicas_config()
+        self.selected_replica_var = tk.StringVar()
+        if reps:
+            ids = [r["id"] for r in reps]
+            self.selected_replica_var.set(ids[0])
         else:
-            # Suggest next replica number
-            next_num = len(replicas) + 1
-            entry_widgets["id"].insert(0, f"replica{next_num}")
-            entry_widgets["host"].insert(0, "localhost")
-            entry_widgets["port"].insert(0, f"{5000 + next_num}")
-            entry_widgets["messages_store"].insert(0, f"replica{next_num}_messages.csv")
-            entry_widgets["users_store"].insert(0, f"replica{next_num}_users.csv")
+            ids = ["No config found"]
 
-        # Create a specific function for the add replica button
-        add_cmd = lambda: self.add_new_replica(entry_widgets)
-        self.button_commands.append(add_cmd)
+        tk.Label(self.main_frame, text="Start a Raft Replica", font=("Arial",14)).pack(pady=10)
+        tk.OptionMenu(self.main_frame, self.selected_replica_var, *ids).pack(pady=5)
 
-        # Add button to create new replica
-        tk.Button(add_frame, text="Add Replica", command=add_cmd).grid(
-            row=len(form_fields), column=0, columnspan=2, pady=10
-        )
+        tk.Button(self.main_frame, text="Start", command=self.start_replica_process).pack(pady=5)
+        tk.Button(self.main_frame, text="Server Management", command=self.server_management_screen).pack(pady=5)
+        tk.Button(self.main_frame, text="Back", command=self.start_menu).pack(pady=5)
 
-        # Add button to start all replicas
-        tk.Button(
-            self.main_frame,
-            text="Start All Replicas",
-            font=("Arial", 12),
-            bg="#4CAF50",
-            fg="black",
-            command=self.start_server_processes,
-        ).pack(pady=10)
-
-        self.root.update_idletasks()
-
-    def add_new_replica(self, entry_widgets):
-        """Adds a new replica to the JSON file and updates the UI."""
-        # Get values from entry widgets
-        new_replica = {field: widget.get() for field, widget in entry_widgets.items()}
-
-        # Convert port to integer
-        try:
-            new_replica["port"] = int(new_replica["port"])
-        except ValueError:
-            messagebox.showerror("Invalid Port", "Port must be a number")
+    def start_replica_process(self):
+        rid = self.selected_replica_var.get()
+        reps = get_replicas_config()
+        config = None
+        for c in reps:
+            if c["id"] == rid:
+                config = c
+                break
+        if not config:
+            messagebox.showerror("Error", f"No config found for {rid}")
             return
 
-        # Load existing replicas
-        try:
-            with open("replicas.json", "r") as file:
-                replicas_data = json.load(file)
-        except (FileNotFoundError, json.JSONDecodeError):
-            replicas_data = {"replicas": []}
+        p = multiprocessing.Process(target=run_server, args=(config,))
+        p.start()
+        messagebox.showinfo("Success", f"Started replica {rid} (PID {p.pid})")
 
-        # Add new replica
-        replicas_data["replicas"].append(new_replica)
-
-        # Save updated replicas
-        with open("replicas.json", "w") as file:
-            json.dump(replicas_data, file, indent=2)
-
-        # Update the global REPLICAS dictionary to include the new replica
-        replica_obj = Replica(
-            new_replica["id"],
-            new_replica["host"],
-            new_replica["port"],
-            new_replica["messages_store"],
-            new_replica["users_store"],
-        )
-        REPLICAS[new_replica["id"]] = replica_obj
-
-        # Restart server view to refresh the list
-        self.start_server()
-
-        messagebox.showinfo(
-            "Success", f"Replica {new_replica['id']} added successfully"
-        )
-
-    def remove_replica(self, replica):
-        """Removes a replica from the JSON file and updates the UI."""
-        # Confirm deletion
-        confirm = messagebox.askyesno(
-            "Confirm Deletion",
-            f"Are you sure you want to remove replica {replica['id']}?",
-        )
-
-        if not confirm:
-            return
-
-        # Load existing replicas
-        with open("replicas.json", "r") as file:
-            replicas_data = json.load(file)
-
-        # Remove the selected replica
-        replicas_data["replicas"] = [
-            r for r in replicas_data["replicas"] if r["id"] != replica["id"]
-        ]
-
-        # Save updated replicas
-        with open("replicas.json", "w") as file:
-            json.dump(replicas_data, file, indent=2)
-
-        # Remove from the global REPLICAS dictionary if it exists
-        if replica["id"] in REPLICAS:
-            del REPLICAS[replica["id"]]
-
-        # Restart server view to refresh the list
-        self.start_server()
-
-        messagebox.showinfo("Success", f"Replica {replica['id']} removed successfully")
-
-    def start_specific_replica(self, replica):
-        """Starts a specific replica."""
-        # Create a replica config object
-        replica_obj = Replica(
-            replica["id"],
-            replica["host"],
-            replica["port"],
-            replica["messages_store"],
-            replica["users_store"],
-        )
-
-        # Launch a single replica process
-        try:
-            p = multiprocessing.Process(
-                target=run_server,  # Use standalone function
-                args=(replica_obj,),
-            )
-            p.start()
-
-            # Clear the frame and show "Server Running" message
-            self.clear_frame()
-            tk.Label(
-                self.main_frame,
-                text=f"Server Running\nReplica {replica['id']} started on {replica['host']}:{replica['port']}",
-                font=("Arial", 14, "bold"),
-            ).pack(pady=10)
-
-            # Add a button to go back to the server management interface
-            tk.Button(
-                self.main_frame,
-                text="Back to Server Management",
-                font=("Arial", 12),
-                command=self.start_server,
-            ).pack(pady=10)
-
-        except Exception as e:
-            messagebox.showerror("Server Error", str(e))
-
-    def start_server_processes(self):
-        """Handles launching server processes in a separate thread."""
-        # First, load replicas from JSON
-        try:
-            with open("replicas.json", "r") as file:
-                replicas_data = json.load(file)
-                replicas = replicas_data.get("replicas", [])
-        except (FileNotFoundError, json.JSONDecodeError):
-            replicas = []
-            messagebox.showwarning("Warning", "No replicas found in replicas.json")
-            return
-
-        # Create replica config objects and update REPLICAS dictionary
-        for replica in replicas:
-            replica_obj = Replica(
-                replica["id"],
-                replica["host"],
-                replica["port"],
-                replica["messages_store"],
-                replica["users_store"],
-            )
-            REPLICAS[replica["id"]] = replica_obj
-
-        # Start processes for each replica
-        processes = []
-        started_replicas = []
-        try:
-            for replica_id in REPLICAS:
-                p = multiprocessing.Process(
-                    target=run_server,  # Use standalone function
-                    args=(REPLICAS[replica_id],),
-                )
-                p.start()
-                processes.append(p)
-                started_replicas.append(replica_id)
-
-            # Clear the frame and show "Servers Running" message
-            self.clear_frame()
-
-            tk.Label(
-                self.main_frame, text="Servers Running", font=("Arial", 14, "bold")
-            ).pack(pady=10)
-
-            # Show list of started replicas
-            replicas_text = "\n".join(
-                [f"Replica {r_id} started" for r_id in started_replicas]
-            )
-            tk.Label(
-                self.main_frame,
-                text=f"Started {len(processes)} replica(s):\n{replicas_text}",
-                font=("Arial", 12),
-                justify="left",
-            ).pack(pady=10)
-
-            # Add a button to go back to the server management interface
-            tk.Button(
-                self.main_frame,
-                text="Back to Server Management",
-                font=("Arial", 12),
-                command=self.start_server,
-            ).pack(pady=10)
-
-        except Exception as e:
-            messagebox.showerror("Server Error", str(e))
+    def server_management_screen(self):
+        self.clear_frame()
+        tk.Label(self.main_frame, text="Server Management", font=("Arial",14)).pack(pady=10)
+        # Go back
+        tk.Button(self.main_frame, text="Back", command=self.start_menu).pack(pady=5)
 
     def on_exit(self):
         self.cleanup()
         self.root.destroy()
 
+    def cleanup(self):
+        self.polling_active = False
+        if self.polling_thread and self.polling_thread.is_alive():
+            self.polling_thread.join(timeout=1.0)
 
-def run_server(replica):
-    """Runs the server."""
+def run_server(replica_config):
+    from concurrent import futures
+    import grpc
+    import protos.blog_pb2_grpc as pb2_grpc
+
+    server_obj = Server(replica_config)
+    grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    pb2_grpc.add_BlogServicer_to_server(server_obj, grpc_server)
+    grpc_server.add_insecure_port(f"{replica_config['host']}:{replica_config['port']}")
+    grpc_server.start()
+    print(f"Replica {replica_config['id']} started on port {replica_config['port']}")
+
     try:
-        print("run server")
-        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-        server_object = Server(replica)
-        app_pb2_grpc.add_AppServicer_to_server(
-            server_object, server
-        )  # Correct registration
-        server.add_insecure_port(f"{replica.host}:{replica.port}")
-        server.start()
-        print(f"Server started, listening on {replica.host}:{replica.port}")
-        server.wait_for_termination()
-
-    except Exception as e:
-        logging.error("Server Error")
-
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Server stopping...")
+        server_obj.stop()
+        grpc_server.stop(0)
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = ChatAppGUI(root)
+    app = BlogAppGUI(root)
 
     def handle_exit_signal(signum, frame):
         print("Received exit signal. Exiting gracefully...")
