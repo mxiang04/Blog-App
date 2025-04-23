@@ -2,18 +2,13 @@ syntax = "proto3";
 
 package blog;
 
-enum Operation {
-    SUCCESS = 0;
-    FAILURE = 1;
-}
-
 message Post {
   string post_id = 1;
   string author = 2;
   string title = 3;
   string content = 4;
   string timestamp = 5;
-  repeated string likes = 6;
+  int32 likes = 6;
 }
 
 message Notification {
@@ -25,7 +20,22 @@ message Notification {
 }
 
 message Request {
-    repeated string info = 1;
+  // For blog operations, 'info' holds strings like
+  //   - "username", "password", "title", "content", etc.
+  repeated string info = 1;
+
+  // For Raft RPCs
+  int64 term = 2;                       // Current term
+  string candidateId = 3;               // Candidate requesting vote
+  int64 lastLogIndex = 4;
+  int64 lastLogTerm = 5;
+
+  // For AppendEntries
+  repeated RaftLogEntry entries = 6;    // Log entries to replicate
+  int64 leaderCommit = 7;              // Leader's commitIndex
+  string leaderId = 8;                 // Leader's ID
+  int64 prevLogIndex = 9;
+  int64 prevLogTerm = 10;
 }
 
 message Response {
@@ -33,16 +43,24 @@ message Response {
   int32 operation = 1;      // SUCCESS = 0, FAILURE = 1
   repeated string info = 2; // any extra string data
   repeated Post posts = 3;  // For post listing operations
-  repeated Notification notifications = 4;
+  repeated Notification notifications = 4; // For notification retrieval
+
+  // For Raft RPCs
+  bool voteGranted = 5;     // True if candidate received vote
+  int64 term = 6;           // CurrentTerm, for leader/candidate to update itself
+  bool success = 7;         // For AppendEntries success/failure
 }
 
+// A Raft log entry
 message RaftLogEntry {
   int64 term = 1;         // term of the entry
   string operation = 2;   // e.g. "CREATE_ACCOUNT", "CREATE_POST", ...
   repeated string params = 3; // parameters for that operation
 }
 
+// Our main gRPC service for the blog application
 service Blog {
+  // --- Blog-based RPCs ---
   rpc RPCLogin (Request) returns (Response);
   rpc RPCLogout (Request) returns (Response);
   rpc RPCCreateAccount (Request) returns (Response);
@@ -50,11 +68,10 @@ service Blog {
   
   // Post operations
   rpc RPCCreatePost (Request) returns (Response);
-  rpc RPCGetPost (Request) returns (Response);
+  rpc RPCGetPosts (Request) returns (Response);
   rpc RPCGetUserPosts (Request) returns (Response);
   rpc RPCGetPostById (Request) returns (Response);
   rpc RPCLikePost (Request) returns (Response);
-  rpc RPCUnlikePost (Request) returns (Response);
   rpc RPCDeletePost (Request) returns (Response);
   
   // Subscription operations
@@ -72,5 +89,14 @@ service Blog {
   rpc RPCSearchUsers (Request) returns (Response);
   rpc RPCGetUserProfile (Request) returns (Response);
 
+  // --- Raft-based RPCs ---
+  rpc RequestVote (Request) returns (Response);
+  rpc AppendEntries (Request) returns (Response);
+
+  // For convenience: get leader info, etc.
   rpc RPCGetLeaderInfo (Request) returns (Response);
+
+  // For membership changes
+  rpc RPCAddReplica (Request) returns (Response);
+  rpc RPCRemoveReplica (Request) returns (Response);
 }

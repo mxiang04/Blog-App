@@ -5,4 +5,5 @@ grpcio
 grpcio-tools
 protobuf
 mypy-protobuf
+email_validator
 filelock
