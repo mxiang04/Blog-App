@@ -10,10 +10,10 @@ from datetime import datetime
 import uuid
 from email_validator import validate_email, EmailNotValidError
 
-
 from protos import blog_pb2, blog_pb2_grpc
 from user import User
 from post import Post
+from email_queue import email_worker
 from util import hash_password
 from consensus import (
     RaftNode,
@@ -42,6 +42,8 @@ class Server(blog_pb2_grpc.BlogServicer):
         self.user_database = {}
         self.posts_database = {}  # post_id -> Post
         
+        # Start email worker
+        email_worker.start()
 
         # Build Raft
         self.raft_node = RaftNode(self.replica_id, self.raft_store)
@@ -92,6 +94,7 @@ class Server(blog_pb2_grpc.BlogServicer):
             self.election_timer.cancel()
         if self.heartbeat_timer:
             self.heartbeat_timer.cancel()
+        email_worker.stop()
 
     # --------------------------------------------------------------------------
     # Raft roles - unchanged from original implementation
@@ -417,9 +420,45 @@ class Server(blog_pb2_grpc.BlogServicer):
                 
                 # Remove user
                 del self.user_database[username]
+        elif op == "ADD_REPLICA":
+            cfg_str = params[0]
+            new_cfg = json.loads(cfg_str)
+            self.add_replica_local(new_cfg)
+        elif op == "REMOVE_REPLICA":
+            rid = params[0]
+            self.remove_replica_local(rid)
 
     def notify_followers_of_new_post(self, author, post):
         pass
+
+    def add_replica_local(self, new_cfg):
+        arr = get_replicas_config()
+        found = any(r["id"] == new_cfg["id"] for r in arr)
+        if not found:
+            arr.append(new_cfg)
+            with open("replicas.json", "w") as f:
+                json.dump({"replicas": arr}, f, indent=2)
+        self._stubs_cache = {}
+        self.replicas_config = arr
+        self.raft_node.nextIndex[new_cfg["id"]] = len(self.raft_node.log) + 1
+        self.raft_node.matchIndex[new_cfg["id"]] = 0
+
+    def remove_replica_local(self, rid):
+        arr = get_replicas_config()
+        updated = [r for r in arr if r["id"] != rid]
+        with open("replicas.json", "w") as f:
+            json.dump({"replicas": updated}, f, indent=2)
+
+        # Remove from stubs
+        if rid in self._stubs_cache:
+            del self._stubs_cache[rid]
+        # Remove from nextIndex, matchIndex
+        if rid in self.raft_node.nextIndex:
+            del self.raft_node.nextIndex[rid]
+        if rid in self.raft_node.matchIndex:
+            del self.raft_node.matchIndex[rid]
+
+        self.replicas_config = updated
 
     # --------------------------------------------------------------------------
     # Replication
