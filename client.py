@@ -7,9 +7,6 @@ from protos import blog_pb2, blog_pb2_grpc
 from util import hash_password
 from consensus import get_replicas_config
 
-SUCCESS = 0
-FAILURE = 1
-
 class PostData:
     def __init__(self, post_id, author, title, content, timestamp, likes):
         self.post_id = post_id
@@ -44,7 +41,7 @@ class Client:
                     channel = grpc.insecure_channel(f"{r['host']}:{r['port']}")
                     stub = blog_pb2_grpc.BlogStub(channel)
                     resp = stub.RPCGetLeaderInfo(blog_pb2.Request(), timeout=2.0)
-                    if resp.operation == SUCCESS and resp.info:
+                    if resp.operation == blog_pb2.SUCCESS and resp.info:
                         leader_id = resp.info[0]
                         cfg = next((c for c in self.replicas if c['id'] == leader_id), None)
                         if cfg:
@@ -81,7 +78,7 @@ class Client:
                 self.leader_stub = None
                 continue
             # Handle follower "Not leader" replies
-            if resp.operation == FAILURE and getattr(resp, 'info', None) and any('Not leader' in i for i in resp.info):
+            if resp.operation == blog_pb2.FAILURE and getattr(resp, 'info', None) and any('Not leader' in i for i in resp.info):
                 logging.debug(f"{rpc_name} returned Not leader, clearing stub and retrying.")
                 self.leader_stub = None
                 continue
@@ -93,7 +90,7 @@ class Client:
             h = hash_password(password)
             req = blog_pb2.Request(info=[username, h])
             resp = self._rpc('RPCLogin', req, timeout=3.0)
-            if resp and resp.operation == SUCCESS:
+            if resp and resp.operation == blog_pb2.SUCCESS:
                 self.username = username
                 unread = len(resp.notifications) if resp.notifications else 0
                 return True, unread
@@ -106,7 +103,7 @@ class Client:
             hpw = hash_password(password)
             req = blog_pb2.Request(info=[username, hpw])
             resp = self._rpc('RPCCreateAccount', req, timeout=3.0)
-            return bool(resp and resp.operation == SUCCESS)
+            return bool(resp and resp.operation == blog_pb2.SUCCESS)
         except Exception as e:
             logging.debug(f"create_account error: {e}")
         return False
@@ -117,7 +114,7 @@ class Client:
                 return True
             req = blog_pb2.Request(info=[self.username])
             resp = self._rpc('RPCLogout', req)
-            if resp and resp.operation == SUCCESS:
+            if resp and resp.operation == blog_pb2.SUCCESS:
                 self.username = None
                 return True
         except Exception as e:
@@ -130,7 +127,7 @@ class Client:
                 return False
             req = blog_pb2.Request(info=[self.username])
             resp = self._rpc('RPCDeleteAccount', req)
-            if resp and resp.operation == SUCCESS:
+            if resp and resp.operation == blog_pb2.SUCCESS:
                 self.username = None
                 return True
         except Exception as e:
@@ -141,7 +138,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[query])
             resp = self._rpc('RPCSearchUsers', req)
-            return resp.info if resp and resp.operation == SUCCESS else []
+            return resp.info if resp and resp.operation == blog_pb2.SUCCESS else []
         except Exception as e:
             logging.debug(f"search_users error: {e}")
         return []
@@ -152,7 +149,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[self.username, title, content])
             resp = self._rpc('RPCCreatePost', req)
-            return bool(resp and resp.operation == SUCCESS)
+            return bool(resp and resp.operation == blog_pb2.SUCCESS)
         except Exception as e:
             logging.debug(f"create_post error: {e}")
         return False
@@ -163,7 +160,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[post_id, self.username])
             resp = self._rpc('RPCLikePost', req)
-            return bool(resp and resp.operation == SUCCESS)
+            return bool(resp and resp.operation == blog_pb2.SUCCESS)
         except Exception as e:
             logging.debug(f"like_post error: {e}")
         return False
@@ -173,7 +170,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[post_id, self.username])
             resp = self._rpc('RPCUnlikePost', req)
-            return bool(resp and resp.operation == SUCCESS)
+            return bool(resp and resp.operation == blog_pb2.SUCCESS)
         except Exception as e:
             logging.debug(f"unlike_post error: {e}")
         return False
@@ -196,7 +193,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[post_id, self.username])
             resp = self._rpc('RPCDeletePost', req)
-            return bool(resp and resp.operation == SUCCESS)
+            return bool(resp and resp.operation == blog_pb2.SUCCESS)
         except Exception as e:
             logging.debug(f"delete_post error: {e}")
         return False
@@ -205,7 +202,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[post_id])
             resp = self._rpc('RPCGetPost', req)
-            if resp and resp.operation == SUCCESS and resp.posts:
+            if resp and resp.operation == blog_pb2.SUCCESS and resp.posts:
                 post = resp.posts[0]
                 return PostData(post.post_id, post.author, post.title, post.content, post.timestamp, post.likes)
         except Exception as e:
@@ -219,7 +216,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[target])
             resp = self._rpc('RPCGetUserPosts', req)
-            return resp.posts if resp and resp.operation == SUCCESS else []
+            return resp.posts if resp and resp.operation == blog_pb2.SUCCESS else []
         except Exception as e:
             logging.debug(f"get_user_posts error: {e}")
         return []
@@ -230,7 +227,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[self.username, followed])
             resp = self._rpc('RPCSubscribe', req)
-            return bool(resp and resp.operation == SUCCESS)
+            return bool(resp and resp.operation == blog_pb2.SUCCESS)
         except Exception as e:
             logging.debug(f"subscribe error: {e}")
         return False
@@ -241,7 +238,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[self.username, followed])
             resp = self._rpc('RPCUnsubscribe', req)
-            return bool(resp and resp.operation == SUCCESS)
+            return bool(resp and resp.operation == blog_pb2.SUCCESS)
         except Exception as e:
             logging.debug(f"unsubscribe error: {e}")
         return False
@@ -252,7 +249,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[self.username])
             resp = self._rpc('RPCGetSubscriptions', req)
-            return resp.info if resp and resp.operation == SUCCESS else []
+            return resp.info if resp and resp.operation == blog_pb2.SUCCESS else []
         except Exception as e:
             logging.debug(f"get_subscriptions error: {e}")
         return []
@@ -263,7 +260,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[self.username])
             resp = self._rpc('RPCGetUserFollowers', req)
-            return resp.info if resp and resp.operation == SUCCESS else []
+            return resp.info if resp and resp.operation == blog_pb2.SUCCESS else []
         except Exception as e:
             logging.debug(f"get_followers error: {e}")
         return []
@@ -274,7 +271,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[self.username])
             resp = self._rpc('RPCGetNotifications', req)
-            return resp.notifications if resp and resp.operation == SUCCESS else []
+            return resp.notifications if resp and resp.operation == blog_pb2.SUCCESS else []
         except Exception as e:
             logging.debug(f"get_notifications error: {e}")
         return []
@@ -287,7 +284,7 @@ class Client:
             })
             req = blog_pb2.Request(info=[cfg])
             resp = self._rpc('RPCAddReplica', req)
-            return bool(resp and resp.operation == SUCCESS)
+            return bool(resp and resp.operation == blog_pb2.SUCCESS)
         except Exception as e:
             logging.debug(f"add_replica error: {e}")
         return False
@@ -296,7 +293,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[rid])
             resp = self._rpc('RPCRemoveReplica', req)
-            return bool(resp and resp.operation == SUCCESS)
+            return bool(resp and resp.operation == blog_pb2.SUCCESS)
         except Exception as e:
             logging.debug(f"remove_replica error: {e}")
         return False
@@ -305,7 +302,7 @@ class Client:
         try:
             req = blog_pb2.Request(info=[])
             resp = self._rpc('RPCGetClusterMembership', req)
-            if resp and resp.operation == SUCCESS and resp.info:
+            if resp and resp.operation == blog_pb2.SUCCESS and resp.info:
                 return json.loads(resp.info[0])
         except Exception as e:
             logging.debug(f"sync_membership error: {e}")

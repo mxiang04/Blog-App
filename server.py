@@ -689,56 +689,56 @@ class Server(blog_pb2_grpc.BlogServicer):
 
     def RPCGetLeaderInfo(self, request, context):
         if self.raft_node.role == "leader":
-            return blog_pb2.Response(operation=SUCCESS, info=[self.replica_id])
-        return blog_pb2.Response(operation=FAILURE, info=[])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS, info=[self.replica_id])
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=[])
 
     # --------------------------------------------------------------------------
     # Blog RPCs
     # --------------------------------------------------------------------------
     def RPCLogin(self, request, context):
         if len(request.info) != 2:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing user/pw"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing user/pw"])
         uname, pw = request.info
         user = self.user_database.get(uname)
         if user and user.password == pw:
             notifications_count = len(user.unread_notifications)
-            return blog_pb2.Response(operation=SUCCESS, info=[str(notifications_count)])
-        return blog_pb2.Response(operation=FAILURE, info=["Login failed"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS, info=[str(notifications_count)])
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Login failed"])
     
     def RPCLogout(self, request, context):
         if len(request.info) < 1:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing user"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing user"])
         username = request.info[0]
         if username in self.user_database:
-            return blog_pb2.Response(operation=SUCCESS)
-        return blog_pb2.Response(operation=FAILURE, info=["Not an account"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS)
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not an account"])
 
     def RPCCreateAccount(self, request, context):
         if self.raft_node.role != "leader":
-            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not leader"])
         
         if len(request.info) != 2:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing user/pw/email"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing user/pw/email"])
         email, pwhash = request.info
         try:
             validate_email(email)
             # Email is valid
         except EmailNotValidError:
-            return blog_pb2.Response(operation=FAILURE, info=["Username must be a valid email"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Username must be a valid email"])
 
         if email in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["Username already taken"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Username already taken"])
         
         op = "CREATE_ACCOUNT"
         params = [email, pwhash]
         res = self.replicate_command(op, params)
         if res == SUCCESS:
-            return blog_pb2.Response(operation=SUCCESS)
-        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS)
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
 
     def RPCSearchUsers(self, request, context):
         if len(request.info) < 1:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing prefix"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing prefix"])
         prefix = request.info[0]
         
         matching_users = []
@@ -746,18 +746,18 @@ class Server(blog_pb2_grpc.BlogServicer):
             if username.startswith(prefix):
                 matching_users.append(username)
         
-        return blog_pb2.Response(operation=SUCCESS, info=matching_users)
+        return blog_pb2.Response(operation=blog_pb2.SUCCESS, info=matching_users)
 
     def RPCCreatePost(self, request, context):
         if self.raft_node.role != "leader":
-            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not leader"])
 
         if len(request.info) < 3:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing author/title/content"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing author/title/content"])
         
         author, title, content = request.info
         if author not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["User does not exist"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["User does not exist"])
         
         timestamp = datetime.now().isoformat()
         post_id = str(uuid.uuid4())  # Assuming uuid is imported
@@ -767,153 +767,153 @@ class Server(blog_pb2_grpc.BlogServicer):
         res = self.replicate_command(op, params)
         
         if res == SUCCESS:
-            return blog_pb2.Response(operation=SUCCESS, info=[post_id])
-        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS, info=[post_id])
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
 
     def RPCLikePost(self, request, context):
         if self.raft_node.role != "leader":
-            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not leader"])
         if len(request.info) < 2:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing post_id/username"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing post_id/username"])
         
         post_id, username = request.info
         if post_id not in self.posts_database:
-            return blog_pb2.Response(operation=FAILURE, info=["Post does not exist"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Post does not exist"])
         if username not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["User does not exist"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["User does not exist"])
         
         if username in self.posts_database[post_id].likes:
-            return blog_pb2.Response(operation=FAILURE, info=["Post already liked"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Post already liked"])
         
         op = "LIKE_POST"
         params = [post_id, username]
         res = self.replicate_command(op, params)
         
         if res == SUCCESS:
-            return blog_pb2.Response(operation=SUCCESS)
-        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS)
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
 
     
     def RPCUnlikePost(self, request, context):
         if self.raft_node.role != "leader":
-            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not leader"])
         if len(request.info) < 2:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing post_id/username"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing post_id/username"])
         
         post_id, username = request.info
         if post_id not in self.posts_database:
-            return blog_pb2.Response(operation=FAILURE, info=["Post does not exist"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Post does not exist"])
         if username not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["User does not exist"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["User does not exist"])
         
         # Check if user has liked the post
         if username not in self.posts_database[post_id].likes:
-            return blog_pb2.Response(operation=FAILURE, info=["Post not liked"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Post not liked"])
         
         op = "UNLIKE_POST"
         params = [post_id, username]
         res = self.replicate_command(op, params)
         
         if res == SUCCESS:
-            return blog_pb2.Response(operation=SUCCESS)
-        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS)
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
 
     def RPCSubscribe(self, request, context):
         if self.raft_node.role != "leader":
-            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not leader"])
         if len(request.info) < 2:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing follower/followed"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing follower/followed"])
         
         follower, followed = request.info
         if follower not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["Follower does not exist"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Follower does not exist"])
         if followed not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["Followed user does not exist"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Followed user does not exist"])
         
         op = "SUBSCRIBE"
         params = [follower, followed]
         res = self.replicate_command(op, params)
         
         if res == SUCCESS:
-            return blog_pb2.Response(operation=SUCCESS)
-        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS)
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
 
     def RPCUnsubscribe(self, request, context):
         if self.raft_node.role != "leader":
-            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not leader"])
         if len(request.info) < 2:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing follower/followed"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing follower/followed"])
         
         follower, followed = request.info
         if follower not in self.user_database or followed not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["User does not exist"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["User does not exist"])
         
         op = "UNSUBSCRIBE"
         params = [follower, followed]
         res = self.replicate_command(op, params)
         
         if res == SUCCESS:
-            return blog_pb2.Response(operation=SUCCESS)
-        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS)
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
 
     def RPCDeletePost(self, request, context):
         if self.raft_node.role != "leader":
-            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not leader"])
         if len(request.info) < 2:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing post_id/author"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing post_id/author"])
         
         post_id, author = request.info
         if post_id not in self.posts_database:
-            return blog_pb2.Response(operation=FAILURE, info=["Post does not exist"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Post does not exist"])
         if author != self.posts_database[post_id].author:
-            return blog_pb2.Response(operation=FAILURE, info=["Not post owner"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not post owner"])
         
         op = "DELETE_POST"
         params = [post_id, author]
         res = self.replicate_command(op, params)
         
         if res == SUCCESS:
-            return blog_pb2.Response(operation=SUCCESS)
-        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS)
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
 
     def RPCDeleteAccount(self, request, context):
         if self.raft_node.role != "leader":
-            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not leader"])
         if len(request.info) < 1:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing username"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing username"])
         
         username = request.info[0]
         if username not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["User does not exist"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["User does not exist"])
         
         op = "DELETE_ACCOUNT"
         params = [username]
         res = self.replicate_command(op, params)
         
         if res == SUCCESS:
-            return blog_pb2.Response(operation=SUCCESS)
-        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS)
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
 
     def RPCGetPost(self, request, context):
         if len(request.info) < 1:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing post_id"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing post_id"])
         
         post_id = request.info[0]
         if post_id not in self.posts_database:
-            return blog_pb2.Response(operation=FAILURE, info=["Post not found"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Post not found"])
         
         post = self.posts_database[post_id]
         # Convert post to serializable format
         post_info = [blog_pb2.Post(post_id=post.post_id, author=post.author, title=post.title, content=post.content, timestamp=str(post.timestamp), likes=post.likes)]
-        return blog_pb2.Response(operation=SUCCESS, posts=post_info)
+        return blog_pb2.Response(operation=blog_pb2.SUCCESS, posts=post_info)
 
     def RPCGetUserPosts(self, request, context):
         if len(request.info) < 1:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing username"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing username"])
         
         username = request.info[0]
         if username not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["User not found"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["User not found"])
         
         user_posts = []
         for post_id in self.user_database[username].posts:
@@ -922,15 +922,15 @@ class Server(blog_pb2_grpc.BlogServicer):
                 rpc_post = blog_pb2.Post(post_id=post_id, author=username, title=post.title, content=post.content, timestamp=str(post.timestamp), likes=post.likes)
                 user_posts.append(rpc_post)
         
-        return blog_pb2.Response(operation=SUCCESS, posts=user_posts)
+        return blog_pb2.Response(operation=blog_pb2.SUCCESS, posts=user_posts)
 
     def RPCGetNotifications(self, request, context):
         if len(request.info) < 1:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing username"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing username"])
         
         username = request.info[0]
         if username not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["User not found"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["User not found"])
         
         notifications = self.user_database[username].unread_notifications
         # Convert notifications to strings
@@ -939,37 +939,37 @@ class Server(blog_pb2_grpc.BlogServicer):
         # Clear unread notifications
         self.user_database[username].unread_notifications = []
         
-        return blog_pb2.Response(operation=SUCCESS, notifications=notification_strings)
+        return blog_pb2.Response(operation=blog_pb2.SUCCESS, notifications=notification_strings)
 
     def RPCGetSubscriptions(self, request, context):
         if len(request.info) < 1:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing username"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing username"])
         
         username = request.info[0]
         if username not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["User not found"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["User not found"])
         
         subscriptions = self.user_database[username].subscriptions
         
-        return blog_pb2.Response(operation=SUCCESS, info=subscriptions)
+        return blog_pb2.Response(operation=blog_pb2.SUCCESS, info=subscriptions)
 
     def RPCGetUserFollowers(self, request, context):
         if len(request.info) < 1:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing username"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing username"])
         
         username = request.info[0]
         if username not in self.user_database:
-            return blog_pb2.Response(operation=FAILURE, info=["User not found"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["User not found"])
         
         followers = self.user_database[username].followers
         
-        return blog_pb2.Response(operation=SUCCESS, info=followers)
+        return blog_pb2.Response(operation=blog_pb2.SUCCESS, info=followers)
 
     def RPCAddReplica(self, request, context):
         if self.raft_node.role != "leader":
-            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not leader"])
         if len(request.info) < 1:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing replica config"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing replica config"])
         
         cfg_str = request.info[0]
         op = "ADD_REPLICA"
@@ -977,14 +977,14 @@ class Server(blog_pb2_grpc.BlogServicer):
         res = self.replicate_command(op, params)
         
         if res == SUCCESS:
-            return blog_pb2.Response(operation=SUCCESS)
-        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS)
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
 
     def RPCRemoveReplica(self, request, context):
         if self.raft_node.role != "leader":
-            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Not leader"])
         if len(request.info) < 1:
-            return blog_pb2.Response(operation=FAILURE, info=["Missing replica ID"])
+            return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Missing replica ID"])
         
         replica_id = request.info[0]
         op = "REMOVE_REPLICA"
@@ -992,5 +992,5 @@ class Server(blog_pb2_grpc.BlogServicer):
         res = self.replicate_command(op, params)
         
         if res == SUCCESS:
-            return blog_pb2.Response(operation=SUCCESS)
-        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+            return blog_pb2.Response(operation=blog_pb2.SUCCESS)
+        return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
