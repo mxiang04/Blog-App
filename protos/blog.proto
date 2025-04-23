@@ -36,6 +36,12 @@ message Response {
   repeated Notification notifications = 4;
 }
 
+message RaftLogEntry {
+  int64 term = 1;         // term of the entry
+  string operation = 2;   // e.g. "CREATE_ACCOUNT", "CREATE_POST", ...
+  repeated string params = 3; // parameters for that operation
+}
+
 service Blog {
   rpc RPCLogin (Request) returns (Response);
   rpc RPCLogout (Request) returns (Response);
