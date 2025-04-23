@@ -40,9 +40,6 @@ class Server(blog_pb2_grpc.BlogServicer):
         # Blog data
         self.user_database = {}
         self.posts_database = {}  # post_id -> Post
-        
-        # Start email worker
-        email_worker.start()
 
         # Build Raft
         self.raft_node = RaftNode(self.replica_id, self.raft_store)
@@ -136,7 +133,6 @@ class Server(blog_pb2_grpc.BlogServicer):
             self.election_timer.cancel()
         if self.heartbeat_timer:
             self.heartbeat_timer.cancel()
-        email_worker.stop()
 
     # --------------------------------------------------------------------------
     # Raft roles - unchanged from original implementation
@@ -297,30 +293,37 @@ class Server(blog_pb2_grpc.BlogServicer):
     def handle_append_entries_response(self, resp, followerId, req):
         if not resp:
             return
-        if resp.term>self.raft_node.currentTerm:
+        if resp.term > self.raft_node.currentTerm:
             self.raft_node.role = "follower"
             self.raft_node.currentTerm = resp.term
             self.raft_node.votedFor = None
             self.raft_node.save_raft_state()
             return
-        if self.raft_node.role!="leader":
+        if self.raft_node.role != "leader":
             return
         if resp.success:
             appended_count = len(req.entries)
-            if appended_count>0:
+            if appended_count > 0:
                 self.raft_node.nextIndex[followerId] += appended_count
-                self.raft_node.matchIndex[followerId] = self.raft_node.nextIndex[followerId]-1
-            for n in range(len(self.raft_node.log), self.raft_node.commitIndex, -1):
-                count = 1
-                for rid in self.raft_node.matchIndex:
-                    if self.raft_node.matchIndex[rid] >= n:
-                        count += 1
-                if count >= ((len(self.replicas_config)//2)+1):
-                    self.raft_node.commitIndex = n
-                    break
+                self.raft_node.matchIndex[followerId] = self.raft_node.nextIndex[followerId] - 1
+            
+            # Update commitIndex based on matchIndex values
+            for n in range(self.raft_node.commitIndex + 1, len(self.raft_node.log) + 1):
+                # Only consider entries from current term
+                if n > 0 and self.raft_node.log[n-1].term == self.raft_node.currentTerm:
+                    count = 1  # Count ourselves
+                    for rid in self.raft_node.matchIndex:
+                        if self.raft_node.matchIndex[rid] >= n:
+                            count += 1
+                    if count >= ((len(self.replicas_config)//2) + 1):
+                        self.raft_node.commitIndex = n
+                        break
             self.apply_committed_entries()
         else:
-            self.raft_node.nextIndex[followerId] = 1
+            # On failure, decrement nextIndex and retry
+            if self.raft_node.nextIndex[followerId] > 1:
+                self.raft_node.nextIndex[followerId] -= 1
+            # Don't reset to 1 immediately - backtrack gradually
             return
 
     def apply_committed_entries(self):
@@ -446,7 +449,9 @@ class Server(blog_pb2_grpc.BlogServicer):
             post.post_id = post_id
             
             self.posts_database[post_id] = post
-            self.user_database[author].posts.append(post_id)
+            
+            if post_id not in self.user_database[author].posts:
+                self.user_database[author].posts.append(post_id)
             
             # Notify followers via email
             self.notify_followers_of_new_post(author, post)
@@ -534,26 +539,7 @@ class Server(blog_pb2_grpc.BlogServicer):
             self.remove_replica_local(rid)
 
     def notify_followers_of_new_post(self, author, post):
-        followers = self.user_database[author].followers
-        for follower in followers:
-            if follower in self.user_database and self.user_database[follower].email:
-                subject = f"New Post from {author}: {post.title}"
-                content = f"""
-                {author} has published a new post:
-                
-                {post.title}
-                
-                {post.content[:200]}{'...' if len(post.content) > 200 else ''}
-                
-                View the full post on our platform.
-                """
-                # Queue the email
-                email_worker.queue_email(
-                    author,
-                    self.user_database[follower].email,
-                    subject,
-                    content
-                )
+        pass
 
     def add_replica_local(self, new_cfg):
         arr = get_replicas_config()
@@ -657,30 +643,47 @@ class Server(blog_pb2_grpc.BlogServicer):
         prevLogIndex = request.prevLogIndex
         prevLogTerm = request.prevLogTerm
 
-            # Convert incoming entries…
-        new_entries = [ RaftLogEntry(e.term, e.operation, list(e.params))
-                        for e in request.entries ]
+        # Convert incoming entries
+        new_entries = [RaftLogEntry(e.term, e.operation, list(e.params))
+                        for e in request.entries]
 
+        log_updated = False
+        
         # If a follower is completely empty (prevLogIndex == 0),
         # just overwrite its log in one shot.
         if prevLogIndex == 0:
             self.raft_node.log = list(new_entries)
+            log_updated = True
             success = True
         else:
             success = self.raft_node.append_entries_to_log(prevLogIndex, prevLogTerm, new_entries)
+            if success and new_entries:  # If we actually appended something
+                log_updated = True
 
         if not success:
             return blog_pb2.Response(term=self.raft_node.currentTerm, success=False)
 
-
         # Update commit index based on leaderCommit.
+        commit_index_changed = False
         if request.leaderCommit > self.raft_node.commitIndex:
             lastNew = len(self.raft_node.log)
+            old_commit_index = self.raft_node.commitIndex
             self.raft_node.commitIndex = min(request.leaderCommit, lastNew)
+            commit_index_changed = (self.raft_node.commitIndex > old_commit_index)
+            
+        # Apply any new committed entries and update lastApplied
+        if commit_index_changed:
             self.apply_committed_entries()
-
+        
         # After making in-memory updates, write the new Raft state to the JSON file.
         self.raft_node.save_raft_state()
+        
+        # If the log was updated (either by complete replacement or append), 
+        # ensure we save to persistent storage even if no entries were applied yet
+        if log_updated and not commit_index_changed and new_entries:
+            # This saves data even if the commitIndex hasn't changed yet
+            # but we received new log entries that will eventually be committed
+            self.save_data()
 
         return blog_pb2.Response(term=self.raft_node.currentTerm, success=True)
 
