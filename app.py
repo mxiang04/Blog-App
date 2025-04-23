@@ -24,26 +24,6 @@ class BlogAppGUI:
         self.client = None
         self.polling_thread = None
         self.polling_active = False
-        self.notification_frame = tk.Frame(root)
-        self.notification_frame.pack(side="bottom", fill="x", padx=5, pady=5)
-
-        self.notification_header = tk.Label(
-            self.notification_frame,
-            text="Notifications",
-            font=("Arial", 10, "bold"),
-            fg="white",
-        )
-        self.notification_header.pack(side="top", anchor="w", padx=5)
-
-        self.notification_text = scrolledtext.ScrolledText(
-            self.notification_frame,
-            height=3,
-            width=50,
-            font=("Arial", 10),
-            wrap=tk.WORD,
-        )
-        self.notification_text.pack(side="left", fill="x", expand=True)
-        self.notification_frame.pack_forget()
 
         self.start_menu()
         self.root.protocol("WM_DELETE_WINDOW", self.on_exit)
@@ -64,7 +44,6 @@ class BlogAppGUI:
             widget.destroy()
 
     def start_menu(self):
-        self.notification_frame.pack_forget()
         self.clear_frame()
 
         tk.Label(self.main_frame, text="Select an Option", font=("Arial", 14)).pack(
@@ -84,34 +63,7 @@ class BlogAppGUI:
         self.clear_frame()
         self.client = Client()
 
-        # Start polling for notifications in background
-        self.polling_active = True
-        self.polling_thread = threading.Thread(target=self.background_poll, daemon=True)
-        self.polling_thread.start()
-
         self.login_menu()
-
-    def background_poll(self):
-        while self.polling_active:
-            try:
-                if self.client and self.client.username:
-                    # Get notifications
-                    notifications = self.client.get_notifications()
-                    if notifications:
-                        self.root.after(0, lambda: self.update_notifications(notifications))
-                time.sleep(1.0)
-            except:
-                time.sleep(1.0)
-
-    def update_notifications(self, notifications):
-        self.notification_text.delete(1.0, tk.END)
-        for notif in notifications:
-            t = notif.timestamp
-            from_user = getattr(notif, 'from')
-            notif_type = notif.type
-            post_title = notif.title
-            self.notification_text.insert(tk.END, f"[{t}] {from_user} {notif_type}: {post_title}\n")
-        self.notification_text.see(tk.END)
 
     def login_menu(self):
         self.clear_frame()
@@ -147,9 +99,7 @@ class BlogAppGUI:
 
         ok, unread = self.client.login(username, password)
         if ok:
-            messagebox.showinfo("Success", f"Login successful! {unread} unread notifications.")
-            self.notification_frame.pack(side="bottom", fill="x", padx=5, pady=5)
-            self.notification_header.pack(side="top", anchor="w", padx=5)
+            messagebox.showinfo("Success", f"Login successful!")
             self.user_menu()
         else:
             messagebox.showerror("Error", "Login failed. Try again.")
@@ -277,9 +227,6 @@ class BlogAppGUI:
             self.main_frame, text="Manage Subscriptions", command=self.manage_subscriptions_menu, width=20
         ).pack(pady=5)
         tk.Button(
-            self.main_frame, text="View Notifications", command=self.view_notifications, width=20
-        ).pack(pady=5)
-        tk.Button(
             self.main_frame, text="Delete Account", command=self.delete_account, width=20
         ).pack(pady=5)
         tk.Button(
@@ -397,7 +344,7 @@ class BlogAppGUI:
             
             likes_label = tk.Label(
                 header_frame,
-                text=f"❤️ {post.likes}",
+                text=f"❤️ {len(post.likes)}",
                 font=("Arial", 10)
             )
             likes_label.pack(side="right")
@@ -427,7 +374,8 @@ class BlogAppGUI:
             button_frame = tk.Frame(post_frame)
             button_frame.pack(fill="x", padx=5, pady=2)
             
-            def like_post_callback(post_id=post.post_id, label=likes_label, button=None):
+            # Like button
+            def like_post_callback(post_id, label, button):
                 if self.client.has_liked_post(post_id):
                     if self.client.unlike_post(post_id):
                         current_likes = int(label.cget("text").split(" ")[1]) - 1
@@ -435,7 +383,6 @@ class BlogAppGUI:
                         button.config(text="Like")  # Update button text to "Like"
                     else:
                         messagebox.showerror("Error", "Failed to unlike post.")
-                
                 else:
                     if self.client.like_post(post_id):
                         current_likes = int(label.cget("text").split(" ")[1]) + 1
@@ -444,17 +391,17 @@ class BlogAppGUI:
                     else:
                         messagebox.showerror("Error", "Failed to like post.")
 
-            # Create the button and pass it to the callback
+            # Create the button with correct variable capture
             like_button = tk.Button(
                 button_frame,
-                text="Unlike" if self.client.has_liked_post(post.post_id) else "Like",
-                command=lambda: like_post_callback()
+                text="Unlike" if self.client.has_liked_post(post.post_id) else "Like"
             )
             like_button.pack(side="left", padx=2)
 
-            # Fix the command to pass the button reference
-            like_button.config(command=lambda button=like_button: like_post_callback(post_id=post.post_id, label=likes_label, button=button))
-            
+            # Set the command with proper value capture - this is the key fix
+            like_button.config(command=lambda pid=post.post_id, lbl=likes_label, btn=like_button: 
+                                like_post_callback(pid, lbl, btn))
+              
             # Delete button (only for own posts)
             if post.author == self.client.username:
                 def delete_post_callback(post_id=post.post_id, frame=post_frame):
@@ -489,30 +436,37 @@ class BlogAppGUI:
     def manage_subscriptions_menu(self):
         self.clear_frame()
         tk.Label(self.main_frame, text="Manage Subscriptions", font=("Arial", 14)).pack(pady=10)
-        
-        # Create tabs for subscriptions and followers
+         
+         # existing tabs
         tab_frame = tk.Frame(self.main_frame)
         tab_frame.pack(fill="both", expand=True)
-        
         subscriptions_button = tk.Button(
-            tab_frame, 
-            text="Your Subscriptions", 
-            command=self.view_subscriptions,
-            width=20
+             tab_frame, 
+             text="Your Subscriptions", 
+             command=self.view_subscriptions,
+             width=20
         )
         subscriptions_button.pack(side="left", padx=5, pady=5)
-        
         followers_button = tk.Button(
-            tab_frame,
-            text="Your Followers",
-            command=self.view_followers,
-            width=20
+             tab_frame,
+             text="Your Followers",
+             command=self.view_followers,
+             width=20
         )
         followers_button.pack(side="left", padx=5, pady=5)
-        
+
+        # new subscription flow
         tk.Button(
-            self.main_frame, text="Back", command=self.user_menu, width=20
-        ).pack(pady=10)
+        self.main_frame,
+        text="Subscribe to User",
+        command=self.subscribe_ui,
+        width=20
+        ).pack(pady=5)
+         
+        tk.Button(
+             self.main_frame, text="Back", command=self.user_menu, width=20
+         ).pack(pady=10)
+
 
     def view_subscriptions(self):
         subscriptions = self.client.get_subscriptions()
@@ -577,39 +531,6 @@ class BlogAppGUI:
         for follower in followers:
             lb.insert("end", follower)
 
-    def view_notifications(self):
-        notifications = self.client.get_notifications()
-        if not notifications:
-            messagebox.showinfo("Notifications", "You have no notifications.")
-            return
-        
-        notif_window = tk.Toplevel(self.root)
-        notif_window.title("Your Notifications")
-        notif_window.geometry("500x400")
-        
-        tk.Label(notif_window, text="Notifications:", font=("Arial", 12, "bold")).pack(pady=5)
-        
-        listbox = scrolledtext.ScrolledText(
-            notif_window,
-            width=60,
-            height=15,
-            font=("Arial", 10),
-            wrap=tk.WORD
-        )
-        listbox.pack(pady=10, fill="both", expand=True)
-        
-        for notif in notifications:
-            post_id = notif.post_id
-            from_user = getattr(notif, 'from')
-            notif_type = notif.type
-            title = notif.title
-            ts = notif.timestamp
-            
-            listbox.insert(tk.END, f"[{ts}] {from_user} {notif_type}: {title} (Post ID: {post_id})\n")
-            listbox.insert(tk.END, "-" * 50 + "\n")
-        
-        listbox.config(state=tk.DISABLED)
-
     def delete_account(self):
         confirm = messagebox.askyesno("Delete Account", "Are you sure you want to delete your account? This action cannot be undone.")
         if confirm:
@@ -625,10 +546,25 @@ class BlogAppGUI:
         if ok:
             messagebox.showinfo("Success", "Logged out successfully!")
             self.client.username = None
-            self.notification_frame.pack_forget()
             self.login_menu()
         else:
             messagebox.showerror("Error", "Log out unsuccessful!")
+    
+    def subscribe_ui(self):
+        # Prompt for a search prefix
+        prefix = simpledialog.askstring("Subscribe", "Enter name prefix to search for users:")
+        if not prefix:
+            return
+        users = self.client.search_users(prefix)
+        if users is None:
+            messagebox.showerror("Error", "Search failed.")
+            return
+        if not users:
+            messagebox.showinfo("No results", "No users match that prefix.")
+            return
+        # Reuse your existing display_users window (it has the Subscribe button built in)
+        self.display_users(users)
+
 
     # --------------------------------------------------------------------------
     # SERVER UI
@@ -670,8 +606,122 @@ class BlogAppGUI:
     def server_management_screen(self):
         self.clear_frame()
         tk.Label(self.main_frame, text="Server Management", font=("Arial",14)).pack(pady=10)
+
+        # Option: Add new server
+        tk.Button(self.main_frame, text="Add New Server", command=self.add_new_server_ui).pack(pady=5)
+        # Option: Remove server
+        tk.Button(self.main_frame, text="Remove Server", command=self.remove_server_ui).pack(pady=5)
+        # Option: Sync/Refresh replicas.json from the leader
+        tk.Button(self.main_frame, text="Sync Replicas from Leader", command=self.sync_replicas).pack(pady=5)
         # Go back
         tk.Button(self.main_frame, text="Back", command=self.start_menu).pack(pady=5)
+
+    def add_new_server_ui(self):
+        def on_submit():
+            rid = entry_id.get().strip()
+            h = entry_host.get().strip()
+            prt = entry_port.get().strip()
+            raftp = entry_raft.get().strip()
+            postp = entry_post.get().strip()
+            userp = entry_user.get().strip()
+            subp = entry_subscriptions.get().strip()
+            if not (rid and h and prt and raftp):
+                messagebox.showerror("Error", "ID, Host, Port, and raft_store required!")
+                return
+            try:
+                port_int = int(prt)
+            except:
+                messagebox.showerror("Error", "Port must be an integer.")
+                return
+
+            if not self.client:
+                self.client = Client()
+
+            ok = self.client.add_replica(rid, h, port_int, raftp, postp, userp, subp)
+            if ok:
+                messagebox.showinfo("Success", f"Replica {rid} added via leader replication.")
+                w.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to add replica (not leader or other error).")
+
+        w = tk.Toplevel(self.root)
+        w.title("Add New Replica")
+
+        tk.Label(w, text="Replica ID:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        entry_id = tk.Entry(w)
+        entry_id.insert(0, "replicaX")
+        entry_id.grid(row=0, column=1, padx=5, pady=5)
+
+        tk.Label(w, text="Host:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        entry_host = tk.Entry(w)
+        entry_host.insert(0, "127.0.0.1")
+        entry_host.grid(row=1, column=1, padx=5, pady=5)
+
+        tk.Label(w, text="Port:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        entry_port = tk.Entry(w)
+        entry_port.insert(0, "500X")
+        entry_port.grid(row=2, column=1, padx=5, pady=5)
+
+        tk.Label(w, text="raft_store:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
+        entry_raft = tk.Entry(w)
+        entry_raft.insert(0, "replicaX_raft.json")
+        entry_raft.grid(row=3, column=1, padx=5, pady=5)
+
+        tk.Label(w, text="posts_store:").grid(row=4, column=0, padx=5, pady=5, sticky="e")
+        entry_post = tk.Entry(w)
+        entry_post.insert(0, "replicaX_posts.csv")
+        entry_post.grid(row=4, column=1, padx=5, pady=5)
+
+        tk.Label(w, text="users_store:").grid(row=5, column=0, padx=5, pady=5, sticky="e")
+        entry_user = tk.Entry(w)
+        entry_user.insert(0, "replicaX_users.csv")
+        entry_user.grid(row=5, column=1, padx=5, pady=5)
+        
+        tk.Label(w, text="subscription_store:").grid(row=6, column=0, padx=5, pady=5, sticky="e")
+        entry_subscriptions = tk.Entry(w)
+        entry_subscriptions.insert(0, "replicaX_subscriptions.csv")
+        entry_subscriptions.grid(row=6, column=1, padx=5, pady=5)
+
+        tk.Button(w, text="Submit", command=on_submit).grid(row=7, column=0, columnspan=2, pady=10)
+
+    def remove_server_ui(self):
+        """
+        UI to remove an existing server from the cluster by ID.
+        """
+        def on_submit():
+            rid = entry_id.get().strip()
+            if not rid:
+                messagebox.showerror("Error", "Replica ID is required!")
+                return
+            if not self.client:
+                self.client = Client()
+
+            ok = self.client.remove_replica(rid)
+            if ok:
+                messagebox.showinfo("Success", f"Replica {rid} removed.")
+                w.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to remove replica (not leader or other error).")
+
+        w = tk.Toplevel(self.root)
+        w.title("Remove Replica")
+
+        tk.Label(w, text="Replica ID to remove:").pack(padx=5, pady=5)
+        entry_id = tk.Entry(w)
+        entry_id.pack(padx=5, pady=5)
+
+        tk.Button(w, text="Submit", command=on_submit).pack(pady=10)
+
+    def sync_replicas(self):
+        if not self.client:
+            self.client = Client()
+        updated_list = self.client.sync_membership()
+        if updated_list is None:
+            messagebox.showerror("Error", "Failed to sync membership (no leader?).")
+            return
+        with open("replicas.json", "w") as f:
+            json.dump({"replicas": updated_list}, f, indent=2)
+        messagebox.showinfo("Success", f"Replicas.json updated with {len(updated_list)} servers.")
 
     def on_exit(self):
         self.cleanup()
