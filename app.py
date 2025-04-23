@@ -427,19 +427,33 @@ class BlogAppGUI:
             button_frame = tk.Frame(post_frame)
             button_frame.pack(fill="x", padx=5, pady=2)
             
-            # Like button
-            def like_post_callback(post_id=post.post_id, label=likes_label):
-                if self.client.like_post(post_id):
-                    current_likes = int(label.cget("text").split(" ")[1]) + 1
-                    label.config(text=f"❤️ {current_likes}")
+            def like_post_callback(post_id=post.post_id, label=likes_label, button=None):
+                if self.client.has_liked_post(post_id):
+                    if self.client.unlike_post(post_id):
+                        current_likes = int(label.cget("text").split(" ")[1]) - 1
+                        label.config(text=f"❤️ {current_likes}")
+                        button.config(text="Like")  # Update button text to "Like"
+                    else:
+                        messagebox.showerror("Error", "Failed to unlike post.")
+                
                 else:
-                    messagebox.showerror("Error", "Failed to like post.")
-            
-            tk.Button(
+                    if self.client.like_post(post_id):
+                        current_likes = int(label.cget("text").split(" ")[1]) + 1
+                        label.config(text=f"❤️ {current_likes}")
+                        button.config(text="Unlike")  # Update button text to "Unlike"
+                    else:
+                        messagebox.showerror("Error", "Failed to like post.")
+
+            # Create the button and pass it to the callback
+            like_button = tk.Button(
                 button_frame,
-                text="Like",
-                command=like_post_callback
-            ).pack(side="left", padx=2)
+                text="Unlike" if self.client.has_liked_post(post.post_id) else "Like",
+                command=lambda: like_post_callback()
+            )
+            like_button.pack(side="left", padx=2)
+
+            # Fix the command to pass the button reference
+            like_button.config(command=lambda button=like_button: like_post_callback(post_id=post.post_id, label=likes_label, button=button))
             
             # Delete button (only for own posts)
             if post.author == self.client.username:
@@ -456,26 +470,6 @@ class BlogAppGUI:
                     command=delete_post_callback
                 ).pack(side="right", padx=2)
                 
-            # Comments section
-            if post.comments:
-                tk.Label(
-                    post_frame,
-                    text=f"Comments ({len(post.comments)})",
-                    font=("Arial", 10, "bold")
-                ).pack(anchor="w", padx=5, pady=2)
-                
-                for comment in post.comments:
-                    comment_frame = tk.Frame(post_frame, relief=tk.SUNKEN, borderwidth=1)
-                    comment_frame.pack(fill="x", padx=15, pady=2)
-                    
-                    tk.Label(
-                        comment_frame,
-                        text=f"{comment.author} ({comment.timestamp[:19]}): {comment.content}",
-                        font=("Arial", 9),
-                        wraplength=500,
-                        anchor="w",
-                        justify=tk.LEFT
-                    ).pack(fill="x", padx=5, pady=2)
     
     def open_post_window(self, post_id):
         post = self.client.get_post(post_id)
