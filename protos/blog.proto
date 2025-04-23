@@ -13,7 +13,7 @@ message Post {
   string title = 3;
   string content = 4;
   string timestamp = 5;
-  int32 likes = 6;
+  repeated string likes = 6;
 }
 
 message Notification {
@@ -73,10 +73,11 @@ service Blog {
   
   // Post operations
   rpc RPCCreatePost (Request) returns (Response);
-  rpc RPCGetPosts (Request) returns (Response);
+  rpc RPCGetPost (Request) returns (Response);
   rpc RPCGetUserPosts (Request) returns (Response);
   rpc RPCGetPostById (Request) returns (Response);
   rpc RPCLikePost (Request) returns (Response);
+  rpc RPCUnlikePost (Request) returns (Response);
   rpc RPCDeletePost (Request) returns (Response);
   
   // Subscription operations

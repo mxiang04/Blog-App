@@ -26,6 +26,24 @@
       "posts_store": "replica_3_posts.csv",
       "users_store": "replica3_users.csv",
       "subscriptions_store": "replica3_subscriptions.csv"
+    },
+    {
+      "id": "replica4",
+      "host": "127.0.0.1",
+      "port": 5004,
+      "raft_store": "replica4_raft.json",
+      "posts_store": "replica4_posts.csv",
+      "users_store": "replica4_users.csv",
+      "subscriptions_store": "replica4_subscriptions.csv"
+    },
+    {
+      "id": "replica5",
+      "host": "127.0.0.1",
+      "port": 5005,
+      "raft_store": "replica5_raft.json",
+      "posts_store": "replica5_posts.csv",
+      "users_store": "replica5_users.csv",
+      "subscriptions_store": "replica5_subscriptions.csv"
     }
   ]
 }

@@ -60,8 +60,8 @@ class BlogStub(object):
                 request_serializer=protos_dot_blog__pb2.Request.SerializeToString,
                 response_deserializer=protos_dot_blog__pb2.Response.FromString,
                 _registered_method=True)
-        self.RPCGetPosts = channel.unary_unary(
-                '/blog.Blog/RPCGetPosts',
+        self.RPCGetPost = channel.unary_unary(
+                '/blog.Blog/RPCGetPost',
                 request_serializer=protos_dot_blog__pb2.Request.SerializeToString,
                 response_deserializer=protos_dot_blog__pb2.Response.FromString,
                 _registered_method=True)
@@ -77,6 +77,11 @@ class BlogStub(object):
                 _registered_method=True)
         self.RPCLikePost = channel.unary_unary(
                 '/blog.Blog/RPCLikePost',
+                request_serializer=protos_dot_blog__pb2.Request.SerializeToString,
+                response_deserializer=protos_dot_blog__pb2.Response.FromString,
+                _registered_method=True)
+        self.RPCUnlikePost = channel.unary_unary(
+                '/blog.Blog/RPCUnlikePost',
                 request_serializer=protos_dot_blog__pb2.Request.SerializeToString,
                 response_deserializer=protos_dot_blog__pb2.Response.FromString,
                 _registered_method=True)
@@ -193,7 +198,7 @@ class BlogServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def RPCGetPosts(self, request, context):
+    def RPCGetPost(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -212,6 +217,12 @@ class BlogServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def RPCLikePost(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RPCUnlikePost(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -341,8 +352,8 @@ def add_BlogServicer_to_server(servicer, server):
                     request_deserializer=protos_dot_blog__pb2.Request.FromString,
                     response_serializer=protos_dot_blog__pb2.Response.SerializeToString,
             ),
-            'RPCGetPosts': grpc.unary_unary_rpc_method_handler(
-                    servicer.RPCGetPosts,
+            'RPCGetPost': grpc.unary_unary_rpc_method_handler(
+                    servicer.RPCGetPost,
                     request_deserializer=protos_dot_blog__pb2.Request.FromString,
                     response_serializer=protos_dot_blog__pb2.Response.SerializeToString,
             ),
@@ -358,6 +369,11 @@ def add_BlogServicer_to_server(servicer, server):
             ),
             'RPCLikePost': grpc.unary_unary_rpc_method_handler(
                     servicer.RPCLikePost,
+                    request_deserializer=protos_dot_blog__pb2.Request.FromString,
+                    response_serializer=protos_dot_blog__pb2.Response.SerializeToString,
+            ),
+            'RPCUnlikePost': grpc.unary_unary_rpc_method_handler(
+                    servicer.RPCUnlikePost,
                     request_deserializer=protos_dot_blog__pb2.Request.FromString,
                     response_serializer=protos_dot_blog__pb2.Response.SerializeToString,
             ),
@@ -584,7 +600,7 @@ class Blog(object):
             _registered_method=True)
 
     @staticmethod
-    def RPCGetPosts(request,
+    def RPCGetPost(request,
             target,
             options=(),
             channel_credentials=None,
@@ -597,7 +613,7 @@ class Blog(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/blog.Blog/RPCGetPosts',
+            '/blog.Blog/RPCGetPost',
             protos_dot_blog__pb2.Request.SerializeToString,
             protos_dot_blog__pb2.Response.FromString,
             options,
@@ -679,6 +695,33 @@ class Blog(object):
             request,
             target,
             '/blog.Blog/RPCLikePost',
+            protos_dot_blog__pb2.Request.SerializeToString,
+            protos_dot_blog__pb2.Response.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RPCUnlikePost(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/blog.Blog/RPCUnlikePost',
             protos_dot_blog__pb2.Request.SerializeToString,
             protos_dot_blog__pb2.Response.FromString,
             options,
