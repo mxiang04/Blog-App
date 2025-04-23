@@ -1,165 +1,69 @@
-import socket
+import grpc
+import time
+import logging
+import json
 import os
 from protos import blog_pb2, blog_pb2_grpc
 from util import hash_password
-import threading
-import logging
-import grpc
-import time
-from consensus import REPLICAS
+from consensus import get_replicas_config
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 SUCCESS = 0
 FAILURE = 1
 
 class PostData:
-    def __init__(self, post_id, author, title, content, timestamp, likes, comments):
+    def __init__(self, post_id, author, title, content, timestamp, likes):
         self.post_id = post_id
         self.author = author
         self.title = title
         self.content = content
         self.timestamp = timestamp
         self.likes = likes
-        self.comments = comments
 
 class Client:
-    # global variables consistent across all instances of the Client class
-    FORMAT = "utf-8"
-    HEADER = 64
-
-    # polling thread to handle incoming messages from the server
-    CLIENT_LOCK = threading.Lock()
-
     def __init__(self):
-        self.stub = None
+        self.leader_stub = None
+        self.replicas = get_replicas_config()
+        self.username = None
+        self.find_leader()
 
-        self.username = ""
-        # last time we tried to connect to any replica
-        self.last_connection_attempt = 0
-        # connection cooldown to prevent constant retries
-        self.connection_cooldown = 3  # seconds
-        # track working replicas to prioritize them
-        self.working_replicas = set(replica["id"] for replica in REPLICAS)
+    def load_replicas(self):
+        if os.path.exists("replicas.json"):
+            with open("replicas.json", "r") as f:
+                data = json.load(f)
+                self.replicas = data.get("replicas", [])
 
-        # initial connection attempt
-        self.connect_to_any_replica()
-
-    def connect_to_any_replica(self):
+    def find_leader(self):
         """
-        Attempt to connect directly to any available replica.
-        Try known working replicas first before trying others.
+        Discover the current leader by querying all replicas.
         """
-        current_time = time.time()
+        self.load_replicas()
+        backoff, max_backoff = 1.0, 10.0
+        while True:
+            for r in self.replicas:
+                try:
+                    channel = grpc.insecure_channel(f"{r['host']}:{r['port']}")
+                    stub = blog_pb2_grpc.BlogStub(channel)
+                    resp = stub.RPCGetLeaderInfo(blog_pb2.Request(), timeout=2.0)
+                    if resp.operation == SUCCESS and resp.info:
+                        leader_id = resp.info[0]
+                        cfg = next((c for c in self.replicas if c['id'] == leader_id), None)
+                        if cfg:
+                            lch = grpc.insecure_channel(f"{cfg['host']}:{cfg['port']}")
+                            self.leader_stub = blog_pb2_grpc.BlogStub(lch)
+                            logging.info(f"Found leader: {leader_id}")
+                            return True
+                except Exception as e:
+                    logging.debug(f"Error finding leader at {r['host']}:{r['port']}: {e}")
+            logging.warning("Leader not found, retrying...")
+            time.sleep(backoff)
+            backoff = min(max_backoff, backoff * 2)
 
-        # we enforce a cooldown period
-        if current_time - self.last_connection_attempt < self.connection_cooldown:
-            return False
-
-        self.last_connection_attempt = current_time
-        for replica_id in list(self.working_replicas):
-            if self.try_connect_to_replica(replica_id):
-                return True
-
-        for replica_id in REPLICAS:
-            if replica_id not in list(self.working_replicas):
-                if self.try_connect_to_replica(replica_id):
-                    return True
-
-        print("Failed to connect to any replica")
-        return False
-
-    def try_connect_to_replica(self, replica_id):
-        """Try to connect to a specific replica directly"""
-        replicas = [replica for replica in REPLICAS if replica["id"] == replica_id]
-        if len(replicas) == 0:
-            return False
-        
-        replica = replicas[0]
-        host, port = replica["host"], replica["port"]
-
-        try:
-            logging.info(
-                f"Attempting to connect to replica {replica_id} at {host}:{port}"
-            )
-            channel = grpc.insecure_channel(f"{host}:{port}")
-            channel_ready = grpc.channel_ready_future(channel)
-            channel_ready.result(timeout=2)  # 2 second timeout
-
-            stub = blog_pb2_grpc.BlogStub(channel)
-
-            # try to get the leader
-            res = stub.RPCGetLeaderInfo(blog_pb2.Request(), timeout=2)
-
-            if res.operation == blog_pb2.SUCCESS:
-                leader_id = "".join(res.info)
-
-                # use if replica is leader
-                if leader_id == replica_id:
-                    self.stub = stub
-                    logging.info(f"Connected to leader replica {replica_id}")
-                    self.working_replicas.add(replica_id)
-                    return True
-
-                # else, we try to get the leader and connect
-                leader = REPLICAS.get(leader_id)
-                if leader:
-                    leader_host, leader_port = leader.host, leader.port
-                    logging.info(
-                        f"Connecting to leader {leader_id} at {leader_host}:{leader_port}"
-                    )
-
-                    try:
-                        leader_channel = grpc.insecure_channel(
-                            f"{leader_host}:{leader_port}"
-                        )
-                        channel_ready = grpc.channel_ready_future(leader_channel)
-                        channel_ready.result(timeout=2)  # 2 second timeout
-
-                        self.stub = blog_pb2_grpc.AppStub(leader_channel)
-                        logging.info(f"Successfully connected to leader {leader_id}")
-                        self.working_replicas.add(leader_id)
-                        self.working_replicas.add(
-                            replica_id
-                        )  # The queried replica works too
-                        return True
-                    except Exception as e:
-                        logging.warning(f"Failed to connect to leader {leader_id}: {e}")
-                        # use working replica if leader connection fails
-                        self.stub = stub
-                        self.working_replicas.add(replica_id)
-                        logging.info(f"Using replica {replica_id} as fallback")
-                        return True
-
-            # If we get here, the replica responded but isn't a leader
-            # Still mark it as working for future attempts
-            self.working_replicas.add(replica_id)
-            self.stub = stub  # Use this replica anyway
-            logging.info(f"Connected to replica {replica_id} (non-leader)")
-            return True
-
-        except Exception as e:
-            logging.warning(f"Failed to connect to replica {replica_id}: {e}")
-            # Remove from working replicas set if connection failed
-            if replica_id in self.working_replicas:
-                self.working_replicas.remove(replica_id)
-            return False
-
-    def ensure_connection(self):
-        """Ensure we have a connection before making a request"""
-        if self.stub is None:
-            return self.connect_to_any_replica()
-        return True
-
-    def handle_rpc_error(self, e, operation_name):
-        """Common error handling for RPC errors"""
-        logging.warning(f"RPC error during {operation_name}: {e}")
-        self.stub = None  # Reset stub on error
-
-        # Try to reconnect immediately
-        if not self.connect_to_any_replica():
-            logging.error(f"Failed to reconnect after RPC error in {operation_name}")
-            return False
+    def ensure_leader(self):
+        """
+        Ensure we have a valid leader_stub, re-discover if needed.
+        """
+        if not self.leader_stub:
+            return self.find_leader()
         return True
 
     def _rpc(self, rpc_name, req, timeout=3.0):
