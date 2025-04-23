@@ -13,7 +13,6 @@ from email_validator import validate_email, EmailNotValidError
 from protos import blog_pb2, blog_pb2_grpc
 from user import User
 from post import Post
-from email_queue import email_worker
 from util import hash_password
 from consensus import (
     RaftNode,
@@ -60,6 +59,10 @@ class Server(blog_pb2_grpc.BlogServicer):
         self.load_data()
         self.raft_node.lastApplied = self.raft_node.commitIndex
         
+        # Reset votedFor to break deadlock
+        self.raft_node.votedFor = None
+        self.raft_node.save_raft_state()
+        
         # Start background
         self.stop_flag = False
         self.election_timer = None
@@ -67,19 +70,58 @@ class Server(blog_pb2_grpc.BlogServicer):
         self.reset_election_timer()
 
     def get_cluster_stubs(self):
-        if not self._stubs_cache:
-            for cfg in self.replicas_config:
-                rid = cfg["id"]
-                if rid != self.replica_id:
-                    self._stubs_cache[rid] = build_stub(cfg["host"], cfg["port"])
+        # Refresh stubs for replicas that might have restarted
+        for cfg in self.replicas_config:
+            rid = cfg["id"]
+            if rid != self.replica_id:
+                # Check if we need to refresh this connection
+                need_refresh = False
+            
+                if rid not in self._stubs_cache:
+                    need_refresh = True
+                else:
+                    # Try a lightweight health check
+                    try:
+                        # Quick non-blocking check using gRPC channel state
+                        channel = self._stubs_cache[rid]._channel
+                        if channel.check_connectivity_state(True) in (
+                            grpc.ChannelConnectivity.TRANSIENT_FAILURE,
+                            grpc.ChannelConnectivity.SHUTDOWN
+                        ):
+                            need_refresh = True
+                    except:
+                        need_refresh = True
+                
+                if need_refresh:
+                    try:
+                        # Create a fresh connection with a short timeout
+                        channel = grpc.insecure_channel(
+                            f"{cfg['host']}:{cfg['port']}",
+                            options=[
+                                ('grpc.enable_retries', 0),
+                                ('grpc.keepalive_time_ms', 5000),
+                                ('grpc.keepalive_timeout_ms', 1000)
+                            ]
+                        )
+                        self._stubs_cache[rid] = blog_pb2_grpc.BlogStub(channel)
+                        logging.info(f"Refreshed connection to replica {rid}")
+                    except Exception as e:
+                        logging.error(f"Failed to refresh connection to replica {rid}: {e}")
+        
         return self._stubs_cache
 
     def reset_election_timer(self):
+        # cancel any existing timer
         if self.election_timer:
             self.election_timer.cancel()
-        # pick a new random timeout each time
-        self.ELECTION_TIMEOUT = random.uniform(3.0, 5.0)
-        self.election_timer = threading.Timer(self.ELECTION_TIMEOUT, self.become_candidate)
+
+        # pick a uniform random timeout between 3 and 5 seconds
+        timeout = random.uniform(3.0, 5.0)
+        self.ELECTION_TIMEOUT = timeout
+        logging.info(f"Election timeout set to {timeout:.2f}s")
+
+        # when it fires, try to become candidate
+        self.election_timer = threading.Timer(timeout, self.become_candidate)
         self.election_timer.start()
 
     def reset_heartbeat_timer(self):
@@ -148,6 +190,9 @@ class Server(blog_pb2_grpc.BlogServicer):
         majority = (len(self.replicas_config)//2)+1
         if votes_granted >= majority:
             self.become_leader()
+        
+        else:
+            self.reset_election_timer()
 
     def become_leader(self):
         self.raft_node.role = "leader"
@@ -161,21 +206,65 @@ class Server(blog_pb2_grpc.BlogServicer):
     def leader_heartbeat(self):
         if self.raft_node.role != "leader":
             return
-        self.send_append_entries_to_all()
-        self.reset_heartbeat_timer()
+
+        self.check_leader_status()
+        if self.raft_node.role == "leader":
+            self.send_append_entries_to_all()
+            self.reset_heartbeat_timer()
+         
+    def check_leader_status(self):
+        if self.raft_node.role != "leader":
+            return
+
+        # Count ourselves
+        reachable = 1
+
+    # Get fresh stubs for all followers
+        stubs = self.get_cluster_stubs()
+
+        # Build an empty AppendEntries (heartbeat) request
+        hb_req = blog_pb2.Request(
+            term=self.raft_node.currentTerm,
+            leaderId=self.replica_id,
+            prevLogIndex=self.raft_node.last_log_index(),
+            prevLogTerm=self.raft_node.last_log_term(),
+            leaderCommit=self.raft_node.commitIndex,
+            entries=[],
+        )
+
+        # Ping each follower
+        for rid, stub in stubs.items():
+            try:
+                resp = stub.AppendEntries(hb_req, timeout=0.5)
+                # If they recognize our term, they’re alive
+                if resp.term == self.raft_node.currentTerm:
+                    reachable += 1
+            except Exception:
+                # RPC failed or stub unreachable → skip
+                pass
+
+        # Demote if we’ve lost majority
+        majority = (len(self.replicas_config) // 2) + 1
+        if reachable < majority:
+            logging.warn(f"Leader stepping down: only {reachable}/{len(self.replicas_config)} live")
+            self.raft_node.role = "follower"
+        self.reset_election_timer()
+
 
     def send_append_entries_to_all(self):
         cstubs = self.get_cluster_stubs()
         term = self.raft_node.currentTerm
-
+        
+        # Use a thread pool to send AppendEntries in parallel
+        threads = []
         for rid, stub in cstubs.items():
             nxt = self.raft_node.nextIndex[rid]
             prevLogIndex = nxt - 1
             prevLogTerm = 0
-            if prevLogIndex>0 and prevLogIndex<=len(self.raft_node.log):
+            if prevLogIndex > 0 and prevLogIndex <= len(self.raft_node.log):
                 prevLogTerm = self.raft_node.log[prevLogIndex-1].term
             entries = []
-            if nxt<=len(self.raft_node.log):
+            if nxt <= len(self.raft_node.log):
                 for e in self.raft_node.log[nxt-1:]:
                     entries.append(
                         blog_pb2.RaftLogEntry(term=e.term, operation=e.operation, params=e.params)
@@ -188,14 +277,22 @@ class Server(blog_pb2_grpc.BlogServicer):
                 leaderCommit=self.raft_node.commitIndex,
                 entries=entries
             )
-            threading.Thread(target=self.append_entries_async, args=(stub, req, rid)).start()
+            t = threading.Thread(target=self.append_entries_async, args=(stub, req, rid))
+            t.start()
+            threads.append(t)
+        
+        # Wait for all threads to complete
+        for t in threads:
+            t.join(timeout=1.0)  # Add timeout to prevent blocking indefinitely
 
     def append_entries_async(self, stub, req, followerId):
         try:
             resp = stub.AppendEntries(req, timeout=2.0)
-            self.handle_append_entries_response(resp, followerId, req)
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"AppendEntries RPC to {followerId} failed: {e}")
+            return
+        self.handle_append_entries_response(resp, followerId, req)
+
 
     def handle_append_entries_response(self, resp, followerId, req):
         if not resp:
@@ -223,7 +320,8 @@ class Server(blog_pb2_grpc.BlogServicer):
                     break
             self.apply_committed_entries()
         else:
-            self.raft_node.nextIndex[followerId] = max(1, self.raft_node.nextIndex[followerId]-1)
+            self.raft_node.nextIndex[followerId] = 1
+            return
 
     def apply_committed_entries(self):
         while self.raft_node.lastApplied<self.raft_node.commitIndex:
@@ -358,7 +456,14 @@ class Server(blog_pb2_grpc.BlogServicer):
                 return
             post_id, username = params
             if post_id in self.posts_database and username in self.user_database:
-                self.posts_database[post_id].likes += 1
+                self.posts_database[post_id].like(username)
+                
+        elif op == "UNLIKE_POST":
+            if len(params) < 2:
+                return
+            post_id, username = params
+            if post_id in self.posts_database and username in self.user_database:
+                self.posts_database[post_id].unlike(username)
                 
         elif op == "SUBSCRIBE":
             if len(params) < 2:
@@ -429,7 +534,26 @@ class Server(blog_pb2_grpc.BlogServicer):
             self.remove_replica_local(rid)
 
     def notify_followers_of_new_post(self, author, post):
-        pass
+        followers = self.user_database[author].followers
+        for follower in followers:
+            if follower in self.user_database and self.user_database[follower].email:
+                subject = f"New Post from {author}: {post.title}"
+                content = f"""
+                {author} has published a new post:
+                
+                {post.title}
+                
+                {post.content[:200]}{'...' if len(post.content) > 200 else ''}
+                
+                View the full post on our platform.
+                """
+                # Queue the email
+                email_worker.queue_email(
+                    author,
+                    self.user_database[follower].email,
+                    subject,
+                    content
+                )
 
     def add_replica_local(self, new_cfg):
         arr = get_replicas_config()
@@ -489,25 +613,31 @@ class Server(blog_pb2_grpc.BlogServicer):
         lastLogIndex = request.lastLogIndex
         lastLogTerm = request.lastLogTerm
 
+        # If our term is higher, reject immediately
         if term < self.raft_node.currentTerm:
             return blog_pb2.Response(term=self.raft_node.currentTerm, voteGranted=False)
 
+        # Update term if needed
         if term > self.raft_node.currentTerm:
             self.raft_node.currentTerm = term
             self.raft_node.votedFor = None
             self.raft_node.role = "follower"
             self.raft_node.save_raft_state()
 
-        # Only grant vote if no vote has been cast this term.
-        if self.raft_node.votedFor is None:
-            # Grant vote if candidate's log is at least as up-to-date.
-            if (lastLogTerm > self.raft_node.last_log_term() or
-                (lastLogTerm == self.raft_node.last_log_term() and lastLogIndex >= self.raft_node.last_log_index())):
-                self.raft_node.votedFor = candId
-                self.raft_node.save_raft_state()
-                self.reset_election_timer()
-                return blog_pb2.Response(term=self.raft_node.currentTerm, voteGranted=True)
-        # If already voted for a candidate (or the candidate's log is not up-to-date), reject.
+        # Check if we've already voted in this term
+        already_voted = self.raft_node.votedFor is not None and self.raft_node.votedFor != candId
+        
+        # Grant vote if we haven't voted yet and candidate's log is at least as up-to-date as ours
+        log_is_current = (lastLogTerm > self.raft_node.last_log_term() or 
+                        (lastLogTerm == self.raft_node.last_log_term() and 
+                        lastLogIndex >= self.raft_node.last_log_index()))
+        
+        if not already_voted and log_is_current:
+            self.raft_node.votedFor = candId
+            self.raft_node.save_raft_state()
+            self.reset_election_timer()  # Reset timer when granting vote
+            return blog_pb2.Response(term=self.raft_node.currentTerm, voteGranted=True)
+        
         return blog_pb2.Response(term=self.raft_node.currentTerm, voteGranted=False)
 
     # AppendEntries RPC - Unchanged from original
@@ -649,7 +779,35 @@ class Server(blog_pb2_grpc.BlogServicer):
         if username not in self.user_database:
             return blog_pb2.Response(operation=FAILURE, info=["User does not exist"])
         
+        if username in self.posts_database[post_id].likes:
+            return blog_pb2.Response(operation=FAILURE, info=["Post already liked"])
+        
         op = "LIKE_POST"
+        params = [post_id, username]
+        res = self.replicate_command(op, params)
+        
+        if res == SUCCESS:
+            return blog_pb2.Response(operation=SUCCESS)
+        return blog_pb2.Response(operation=FAILURE, info=["Could not replicate"])
+
+    
+    def RPCUnlikePost(self, request, context):
+        if self.raft_node.role != "leader":
+            return blog_pb2.Response(operation=FAILURE, info=["Not leader"])
+        if len(request.info) < 2:
+            return blog_pb2.Response(operation=FAILURE, info=["Missing post_id/username"])
+        
+        post_id, username = request.info
+        if post_id not in self.posts_database:
+            return blog_pb2.Response(operation=FAILURE, info=["Post does not exist"])
+        if username not in self.user_database:
+            return blog_pb2.Response(operation=FAILURE, info=["User does not exist"])
+        
+        # Check if user has liked the post
+        if username not in self.posts_database[post_id].likes:
+            return blog_pb2.Response(operation=FAILURE, info=["Post not liked"])
+        
+        op = "UNLIKE_POST"
         params = [post_id, username]
         res = self.replicate_command(op, params)
         
@@ -743,15 +901,7 @@ class Server(blog_pb2_grpc.BlogServicer):
         
         post = self.posts_database[post_id]
         # Convert post to serializable format
-        post_info = [
-            post.post_id,
-            post.author,
-            post.title,
-            post.content,
-            str(post.timestamp),
-            str(post.likes)
-        ]
-        
+        post_info = [blog_pb2.Post(post_id=post.post_id, author=post.author, title=post.title, content=post.content, timestamp=str(post.timestamp), likes=post.likes)]
         return blog_pb2.Response(operation=SUCCESS, posts=post_info)
 
     def RPCGetUserPosts(self, request, context):
@@ -766,7 +916,6 @@ class Server(blog_pb2_grpc.BlogServicer):
         for post_id in self.user_database[username].posts:
             if post_id in self.posts_database:
                 post = self.posts_database[post_id]
-                post_summary = f"{post_id}|{post.title}|{str(post.timestamp)}|{str(post.likes)}"
                 rpc_post = blog_pb2.Post(post_id=post_id, author=username, title=post.title, content=post.content, timestamp=str(post.timestamp), likes=post.likes)
                 user_posts.append(rpc_post)
         
