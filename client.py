@@ -162,220 +162,247 @@ class Client:
             return False
         return True
 
-    # --------------------------------------------------------------------------
-    # User Authentication
-    # --------------------------------------------------------------------------
+    def _rpc(self, rpc_name, req, timeout=3.0):
+        """
+        Generic RPC caller that retries once on "Not leader" or connection error.
+        """
+        for _ in range(2):
+            if not self.ensure_leader():
+                return None
+            try:
+                method = getattr(self.leader_stub, rpc_name)
+                resp = method(req, timeout=timeout)
+            except grpc.RpcError as e:
+                logging.debug(f"RPC error on {rpc_name}: {e}")
+                self.leader_stub = None
+                continue
+            # Handle follower "Not leader" replies
+            if resp.operation == FAILURE and getattr(resp, 'info', None) and any('Not leader' in i for i in resp.info):
+                logging.debug(f"{rpc_name} returned Not leader, clearing stub and retrying.")
+                self.leader_stub = None
+                continue
+            return resp
+        return None
+
     def login(self, username, password):
-        if not self.ensure_leader():
-            return (False, 0)
         try:
             h = hash_password(password)
             req = blog_pb2.Request(info=[username, h])
-            resp = self.leader_stub.RPCLogin(req, timeout=3.0)
-            if resp.operation == SUCCESS:
+            resp = self._rpc('RPCLogin', req, timeout=3.0)
+            if resp and resp.operation == SUCCESS:
                 self.username = username
                 unread = len(resp.notifications) if resp.notifications else 0
-                return (True, unread)
-            return (False, 0)
-        except:
-            self.leader_stub = None
-            return (False, 0)
+                return True, unread
+        except Exception as e:
+            logging.debug(f"login error: {e}")
+        return False, 0
 
     def create_account(self, username, password):
-        if not self.ensure_leader():
-            return False
         try:
             hpw = hash_password(password)
             req = blog_pb2.Request(info=[username, hpw])
-            resp = self.leader_stub.RPCCreateAccount(req, timeout=3.0)
-            return (resp.operation == SUCCESS)
-        except:
-            self.leader_stub = None
-            return False
-
-    def delete_account(self):
-        if not self.ensure_leader():
-            return False
-        if not self.username:
-            return False
-        try:
-            req = blog_pb2.Request(info=[self.username])
-            resp = self.leader_stub.RPCDeleteAccount(req, timeout=3.0)
-            if resp.operation == SUCCESS:
-                self.username = None
-                return True
-            return False
-        except:
-            self.leader_stub = None
-            return False
+            resp = self._rpc('RPCCreateAccount', req, timeout=3.0)
+            return bool(resp and resp.operation == SUCCESS)
+        except Exception as e:
+            logging.debug(f"create_account error: {e}")
+        return False
 
     def logout(self):
-        if not self.ensure_leader():
-            return False
-        if not self.username:
-            return True
         try:
+            if not self.username:
+                return True
             req = blog_pb2.Request(info=[self.username])
-            resp = self.leader_stub.RPCLogout(req, timeout=3.0)
-            if resp.operation == SUCCESS:
+            resp = self._rpc('RPCLogout', req)
+            if resp and resp.operation == SUCCESS:
                 self.username = None
                 return True
-            return False
-        except:
-            self.leader_stub = None
-            return False
+        except Exception as e:
+            logging.debug(f"logout error: {e}")
+        return False
+
+    def delete_account(self):
+        try:
+            if not self.username:
+                return False
+            req = blog_pb2.Request(info=[self.username])
+            resp = self._rpc('RPCDeleteAccount', req)
+            if resp and resp.operation == SUCCESS:
+                self.username = None
+                return True
+        except Exception as e:
+            logging.debug(f"delete_account error: {e}")
+        return False
 
     def search_users(self, query):
-        if not self.ensure_leader():
-            return []
         try:
             req = blog_pb2.Request(info=[query])
-            resp = self.leader_stub.RPCSearchUsers(req, timeout=3.0)
-            if resp.operation == SUCCESS:
-                return resp.info
-            return []
-        except:
-            self.leader_stub = None
-            return []
+            resp = self._rpc('RPCSearchUsers', req)
+            return resp.info if resp and resp.operation == SUCCESS else []
+        except Exception as e:
+            logging.debug(f"search_users error: {e}")
+        return []
 
-    # --------------------------------------------------------------------------
-    # Blog Post Operations
-    # --------------------------------------------------------------------------
     def create_post(self, title, content):
-        if not self.ensure_leader():
-            return False
         if not self.username:
             return False
         try:
             req = blog_pb2.Request(info=[self.username, title, content])
-            resp = self.leader_stub.RPCCreatePost(req, timeout=3.0)
-            return (resp.operation == SUCCESS)
-        except:
-            self.leader_stub = None
-            return False
+            resp = self._rpc('RPCCreatePost', req)
+            return bool(resp and resp.operation == SUCCESS)
+        except Exception as e:
+            logging.debug(f"create_post error: {e}")
+        return False
 
     def like_post(self, post_id):
-        if not self.ensure_leader() or not self.username:
+        if not self.username:
             return False
         try:
-            req = blog_pb2.Request(info=[self.username, post_id])
-            resp = self.leader_stub.RPCLikePost(req, timeout=3.0)
-            return (resp.operation == SUCCESS)
-        except:
-            self.leader_stub = None
+            req = blog_pb2.Request(info=[post_id, self.username])
+            resp = self._rpc('RPCLikePost', req)
+            return bool(resp and resp.operation == SUCCESS)
+        except Exception as e:
+            logging.debug(f"like_post error: {e}")
+        return False
+    def unlike_post(self, post_id):
+        if not self.username:
             return False
+        try:
+            req = blog_pb2.Request(info=[post_id, self.username])
+            resp = self._rpc('RPCUnlikePost', req)
+            return bool(resp and resp.operation == SUCCESS)
+        except Exception as e:
+            logging.debug(f"unlike_post error: {e}")
+        return False
+
+    def has_liked_post(self, post_id):
+        """Check if the current user has liked a post"""
+        if not self.username:
+            return False
+        try:
+            post = self.get_post(post_id)
+            if post:
+                return self.username in post.likes
+        except Exception as e:
+            logging.debug(f"has_liked_post error: {e}")
+        return False
 
     def delete_post(self, post_id):
-        if not self.ensure_leader() or not self.username:
+        if not self.username:
             return False
         try:
-            req = blog_pb2.Request(info=[self.username, post_id])
-            resp = self.leader_stub.RPCDeletePost(req, timeout=3.0)
-            return (resp.operation == SUCCESS)
-        except:
-            self.leader_stub = None
-            return False
-    
+            req = blog_pb2.Request(info=[post_id, self.username])
+            resp = self._rpc('RPCDeletePost', req)
+            return bool(resp and resp.operation == SUCCESS)
+        except Exception as e:
+            logging.debug(f"delete_post error: {e}")
+        return False
+
     def get_post(self, post_id):
-        if not self.ensure_leader():
-            return None
         try:
             req = blog_pb2.Request(info=[post_id])
-            resp = self.leader_stub.RPCGetPost(req, timeout=3.0)
-            if resp.operation == SUCCESS and resp.posts:
-                pid, author, title, content, ts, likes, comments_json = resp.posts
-                comments = json.loads(comments_json) if comments_json else []
-                return PostData(pid, author, title, content, ts, int(likes), comments)
-        except Exception:
-            self.leader_stub = None
+            resp = self._rpc('RPCGetPost', req)
+            if resp and resp.operation == SUCCESS and resp.posts:
+                post = resp.posts[0]
+                return PostData(post.post_id, post.author, post.title, post.content, post.timestamp, post.likes)
+        except Exception as e:
+            logging.debug(f"get_post error: {e}")
         return None
 
-    # --------------------------------------------------------------------------
-    # Fetch all posts for a user, returning full PostData objects
     def get_user_posts(self, username=None):
-        if not self.ensure_leader():
-            return []
-        target = username if username else self.username
+        target = username or self.username
         if not target:
             return []
         try:
             req = blog_pb2.Request(info=[target])
-            resp = self.leader_stub.RPCGetUserPosts(req, timeout=3.0)
-            if resp.operation != SUCCESS:
-                return []
-            posts = []
-            for summary in resp.posts:
-                # summary format: post_id|title|timestamp|likes
-                parts = summary.split("|", 1)
-                pid = parts[0]
-                post_obj = self.get_post(pid)
-                if post_obj:
-                    posts.append(post_obj)
-            return posts
-        except Exception:
-            self.leader_stub = None
-            return []
+            resp = self._rpc('RPCGetUserPosts', req)
+            return resp.posts if resp and resp.operation == SUCCESS else []
+        except Exception as e:
+            logging.debug(f"get_user_posts error: {e}")
+        return []
 
-    # --------------------------------------------------------------------------
-    # Subscription Operations
-    # --------------------------------------------------------------------------
-    def subscribe(self, target_user):
-        if not self.ensure_leader() or not self.username:
+    def subscribe(self, followed):
+        if not self.username:
             return False
         try:
-            req = blog_pb2.Request(info=[self.username, target_user])
-            resp = self.leader_stub.RPCSubscribe(req, timeout=3.0)
-            return (resp.operation == SUCCESS)
-        except:
-            self.leader_stub = None
-            return False
+            req = blog_pb2.Request(info=[self.username, followed])
+            resp = self._rpc('RPCSubscribe', req)
+            return bool(resp and resp.operation == SUCCESS)
+        except Exception as e:
+            logging.debug(f"subscribe error: {e}")
+        return False
 
-    def unsubscribe(self, target_user):
-        if not self.ensure_leader() or not self.username:
+    def unsubscribe(self, followed):
+        if not self.username:
             return False
         try:
-            req = blog_pb2.Request(info=[self.username, target_user])
-            resp = self.leader_stub.RPCUnsubscribe(req, timeout=3.0)
-            return (resp.operation == SUCCESS)
-        except:
-            self.leader_stub = None
-            return False
+            req = blog_pb2.Request(info=[self.username, followed])
+            resp = self._rpc('RPCUnsubscribe', req)
+            return bool(resp and resp.operation == SUCCESS)
+        except Exception as e:
+            logging.debug(f"unsubscribe error: {e}")
+        return False
 
     def get_subscriptions(self):
-        if not self.ensure_leader() or not self.username:
+        if not self.username:
             return []
         try:
             req = blog_pb2.Request(info=[self.username])
-            resp = self.leader_stub.RPCGetSubscriptions(req, timeout=3.0)
-            return resp.info if resp.operation == SUCCESS else []
-        except:
-            self.leader_stub = None
-            return []
+            resp = self._rpc('RPCGetSubscriptions', req)
+            return resp.info if resp and resp.operation == SUCCESS else []
+        except Exception as e:
+            logging.debug(f"get_subscriptions error: {e}")
+        return []
 
-    def get_followers(self, username=None):
-        if not self.ensure_leader():
+    def get_followers(self):
+        if not self.username:
             return []
         try:
-            target_user = username if username else self.username
-            if not target_user:
-                return []
-            req = blog_pb2.Request(info=[target_user])
-            resp = self.leader_stub.RPCGetUserFollowers(req, timeout=3.0)
-            return resp.info if resp.operation == SUCCESS else []
-        except:
-            self.leader_stub = None
-            return []
+            req = blog_pb2.Request(info=[self.username])
+            resp = self._rpc('RPCGetUserFollowers', req)
+            return resp.info if resp and resp.operation == SUCCESS else []
+        except Exception as e:
+            logging.debug(f"get_followers error: {e}")
+        return []
 
-    # --------------------------------------------------------------------------
-    # Notification Operations
-    # --------------------------------------------------------------------------
     def get_notifications(self):
-        if not self.ensure_leader() or not self.username:
+        if not self.username:
             return []
         try:
             req = blog_pb2.Request(info=[self.username])
-            resp = self.leader_stub.RPCGetNotifications(req, timeout=3.0)
-            return resp.notifications if resp.operation == SUCCESS else []
-        except:
-            self.leader_stub = None
-            return []
+            resp = self._rpc('RPCGetNotifications', req)
+            return resp.notifications if resp and resp.operation == SUCCESS else []
+        except Exception as e:
+            logging.debug(f"get_notifications error: {e}")
+        return []
+
+    def add_replica(self, rid, host, port, raft_store, posts_store, users_store, subscriptions_store):
+        try:
+            cfg = json.dumps({
+                'id': rid, 'host': host, 'port': port,
+                'raft_store': raft_store, 'posts_store': posts_store, 'users_store': users_store, 'subscriptions_store':subscriptions_store
+            })
+            req = blog_pb2.Request(info=[cfg])
+            resp = self._rpc('RPCAddReplica', req)
+            return bool(resp and resp.operation == SUCCESS)
+        except Exception as e:
+            logging.debug(f"add_replica error: {e}")
+        return False
+
+    def remove_replica(self, rid):
+        try:
+            req = blog_pb2.Request(info=[rid])
+            resp = self._rpc('RPCRemoveReplica', req)
+            return bool(resp and resp.operation == SUCCESS)
+        except Exception as e:
+            logging.debug(f"remove_replica error: {e}")
+        return False
+
+    def sync_membership(self):
+        try:
+            req = blog_pb2.Request(info=[])
+            resp = self._rpc('RPCGetClusterMembership', req)
+            if resp and resp.operation == SUCCESS and resp.info:
+                return json.loads(resp.info[0])
+        except Exception as e:
+            logging.debug(f"sync_membership error: {e}")
+        return None
