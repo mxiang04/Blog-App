@@ -1,19 +1,8 @@
 import json
 import os
 import grpc
-from protos import blog_pb2, blog_pb2_grpc
+from protos import app_pb2, app_pb2_grpc
 from typing import List
-
-class Replica:
-    def __init__(self, replica_id, host, port, messages_store, users_store):
-        # a local log for each replica for specific messages
-        self.log = []
-        self.host = host
-        self.port = port
-        self.id = replica_id
-        self.users_store = users_store
-        self.messages_store = messages_store
-        self.active = False
 
 def get_replicas_config():
     """
@@ -43,21 +32,137 @@ def build_stub(host, port):
     Create a gRPC stub for the given host/port.
     """
     channel = grpc.insecure_channel(f"{host}:{port}")
-    stub = blog_pb2_grpc.BlogStub(channel)
+    stub = app_pb2_grpc.AppStub(channel)
     return stub
 
-def get_total_stubs(id_limit=None):
-    total_stubs = {}
-    with open("replicas.json", "r") as file:
-        data = json.load(file)
-        replicas = data["replicas"]
-        for r in replicas:
-            if not id_limit or r["id"] != id_limit:
-                print(f"Starting stub at {r['host']}:{r['port']}")
-                channel = grpc.insecure_channel(f"{r['host']}:{r['port']}")
-                stub = app_pb2_grpc.AppStub(channel)
-                total_stubs[r["id"]] = stub
-    return total_stubs
+class RaftLogEntry:
+    """
+    A single Raft log entry in memory. 
+    This parallels app_pb2.RaftLogEntry but stored in Python object form.
+    """
+    def __init__(self, term, operation, params):
+        self.term = term
+        self.operation = operation
+        self.params = params  # e.g. [username, password], etc.
 
+    def to_dict(self):
+        return {
+            "term": self.term,
+            "operation": self.operation,
+            "params": self.params
+        }
 
-REPLICAS = get_replicas_config()
+    @staticmethod
+    def from_dict(d):
+        return RaftLogEntry(d["term"], d["operation"], d["params"])
+
+class RaftNode:
+    """
+    This class holds the persistent and in-memory Raft state for one replica.
+
+    * Persistent state on all servers:
+      - currentTerm
+      - votedFor
+      - log[]
+
+    * Volatile state on all servers:
+      - commitIndex
+      - lastApplied
+
+    * Volatile state on leaders:
+      - nextIndex[] (for each follower)
+      - matchIndex[] (for each follower)
+    """
+    def __init__(self, replica_id, raft_store_path):
+        self.replica_id = replica_id
+        self.raft_store_path = raft_store_path
+
+        # persistent state
+        self.currentTerm = 0
+        self.votedFor = None
+        self.log: List[RaftLogEntry] = []
+
+        # volatile state
+        self.commitIndex = 0
+        self.lastApplied = 0
+
+        # leader state
+        self.nextIndex = {}
+        self.matchIndex = {}
+
+        self.role = "follower"
+
+        # load persistent store
+        self.load_raft_state()
+
+    def load_raft_state(self):
+        """
+        Loads persistent Raft state (term, vote, log) from a JSON file.
+        """
+        if not os.path.exists(self.raft_store_path):
+            return
+
+        try:
+            with open(self.raft_store_path, "r") as f:
+                data = json.load(f)
+                self.currentTerm = data.get("currentTerm", 0)
+                self.votedFor = data.get("votedFor", None)
+                log_data = data.get("log", [])
+                self.log = [RaftLogEntry.from_dict(e) for e in log_data]
+        except:
+            pass
+
+    def save_raft_state(self):
+        """
+        Persists currentTerm, votedFor, and the log to the JSON store.
+        """
+        data = {
+            "currentTerm": self.currentTerm,
+            "votedFor": self.votedFor,
+            "log": [e.to_dict() for e in self.log],
+        }
+        with open(self.raft_store_path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def last_log_index(self):
+        return len(self.log)
+
+    def last_log_term(self):
+        if len(self.log) == 0:
+            return 0
+        return self.log[-1].term
+
+    def append_entries_to_log(self, prevLogIndex, prevLogTerm, entries: List[RaftLogEntry]):
+        """
+        Attempt to append new entries, after verifying the existing log at prevLogIndex matches prevLogTerm.
+        Returns True if successful, False if there's a mismatch.
+        """
+        # fail if our log is too short
+        if prevLogIndex > len(self.log):
+            return False
+
+        # check if logs match
+        if prevLogIndex > 0:
+            if self.log[prevLogIndex - 1].term != prevLogTerm:
+                return False
+
+        # If an existing entry conflicts with a new one (same index but different terms),
+        # we delete the existing entry and all that follow it. we then append new entries
+        idx = prevLogIndex
+        for new_entry in entries:
+            # if there's a conflict
+            if idx < len(self.log):
+                if self.log[idx].term != new_entry.term:
+                    # delete everything from idx onward
+                    self.log = self.log[:idx]
+                    self.log.append(new_entry)
+                else:
+                    # same term, same index => do nothing
+                    pass
+            else:
+                # append new entry
+                self.log.append(new_entry)
+            idx += 1
+
+        self.save_raft_state()
+        return True
