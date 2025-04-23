@@ -2,6 +2,11 @@ syntax = "proto3";
 
 package blog;
 
+enum Operation {
+    SUCCESS = 0;
+    FAILURE = 1;
+}
+
 message Post {
   string post_id = 1;
   string author = 2;
