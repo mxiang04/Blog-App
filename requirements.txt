@@ -7,3 +7,4 @@ protobuf
 mypy-protobuf
 email_validator
 filelock
+dotenv

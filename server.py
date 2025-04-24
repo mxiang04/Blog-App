@@ -9,6 +9,8 @@ import logging
 from datetime import datetime
 import uuid
 from email_validator import validate_email, EmailNotValidError
+from email_queue import email_worker
+from dotenv import load_dotenv
 
 from protos import blog_pb2, blog_pb2_grpc
 from user import User
@@ -23,6 +25,7 @@ from consensus import (
 
 SUCCESS = 0
 FAILURE = 1
+load_dotenv()
 
 class Server(blog_pb2_grpc.BlogServicer):
     ELECTION_TIMEOUT = random.uniform(3.0, 5.0)
@@ -65,6 +68,9 @@ class Server(blog_pb2_grpc.BlogServicer):
         self.election_timer = None
         self.heartbeat_timer = None
         self.reset_election_timer()
+
+        # Start email worker
+        email_worker.start()
 
     def get_cluster_stubs(self):
         # Refresh stubs for replicas that might have restarted
@@ -133,6 +139,8 @@ class Server(blog_pb2_grpc.BlogServicer):
             self.election_timer.cancel()
         if self.heartbeat_timer:
             self.heartbeat_timer.cancel()
+            
+        email_worker.stop()
 
     # --------------------------------------------------------------------------
     # Raft roles - unchanged from original implementation
@@ -539,7 +547,26 @@ class Server(blog_pb2_grpc.BlogServicer):
             self.remove_replica_local(rid)
 
     def notify_followers_of_new_post(self, author, post):
-        pass
+        followers = self.user_database[author].followers
+        for follower in followers:
+            if follower in self.user_database and self.user_database[follower].email:
+                subject = f"New Post from {author}: {post.title}"
+                content = f"""
+                {author} has published a new post:
+                
+                {post.title}
+                
+                {post.content[:200]}{'...' if len(post.content) > 200 else ''}
+                
+                View the full post on our platform.
+                """
+                # Queue the email
+                email_worker.queue_email(
+                    author,
+                    self.user_database[follower].email,
+                    subject,
+                    content
+                )
 
     def add_replica_local(self, new_cfg):
         arr = get_replicas_config()
