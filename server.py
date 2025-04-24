@@ -460,9 +460,6 @@ class Server(blog_pb2_grpc.BlogServicer):
             
             if post_id not in self.user_database[author].posts:
                 self.user_database[author].posts.append(post_id)
-            
-            # Notify followers via email
-            self.notify_followers_of_new_post(author, post)
                 
         elif op == "LIKE_POST":
             if len(params) < 2:
@@ -547,9 +544,12 @@ class Server(blog_pb2_grpc.BlogServicer):
             self.remove_replica_local(rid)
 
     def notify_followers_of_new_post(self, author, post):
+        if self.raft_node.role != "leader":
+            return
+        
         followers = self.user_database[author].followers
         for follower in followers:
-            if follower in self.user_database and self.user_database[follower].email:
+            if follower in self.user_database:
                 subject = f"New Post from {author}: {post.title}"
                 content = f"""
                 {author} has published a new post:
@@ -563,7 +563,7 @@ class Server(blog_pb2_grpc.BlogServicer):
                 # Queue the email
                 email_worker.queue_email(
                     author,
-                    self.user_database[follower].email,
+                    follower,
                     subject,
                     content
                 )
@@ -794,6 +794,11 @@ class Server(blog_pb2_grpc.BlogServicer):
         res = self.replicate_command(op, params)
         
         if res == SUCCESS:
+            post = Post(author, title, content)
+            post.timestamp = datetime.fromisoformat(timestamp)
+            post.post_id = post_id
+            # Notify followers via email
+            self.notify_followers_of_new_post(author, post)
             return blog_pb2.Response(operation=blog_pb2.SUCCESS, info=[post_id])
         return blog_pb2.Response(operation=blog_pb2.FAILURE, info=["Could not replicate"])
 
